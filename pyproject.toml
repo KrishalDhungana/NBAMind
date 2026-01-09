@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nbamind"
+version = "0.1.0"
+description = "NBA player similarity and explanation system based on representation-level features from nba_api."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {file = "LICENSE"}
+authors = [{name = "KrishalDhungana"}]
+dependencies = [
+  "nba_api",
+  "requests",
+  "tenacity",
+  "polars",
+  "duckdb"
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
