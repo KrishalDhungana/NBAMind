@@ -66,7 +66,9 @@ def _cache_path(endpoint_name: str, params: Dict[str, Any]) -> Path:
     key = json.dumps(params, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(f"{endpoint_name}|{key}".encode("utf-8")).hexdigest()[:20]
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return CACHE_DIR / f"{endpoint_name}_{digest}.json"
+    season = params.get("season")
+    prefix = f"{season}_" if season else ""
+    return CACHE_DIR / f"{prefix}_{endpoint_name}_{digest}.json"
 
 
 def _rate_limit() -> None:

@@ -1,4 +1,4 @@
-from nba_api.stats.endpoints import commonallplayers, leaguedashplayerbiostats, leaguedashplayerstats, leaguedashplayershotlocations, leaguedashptdefend, leaguehustlestatsplayer, playbyplayv3
+from nba_api.stats.endpoints import commonallplayers, leaguedashplayerbiostats, leaguedashplayerstats, leaguedashplayershotlocations, leaguedashptdefend, leaguehustlestatsplayer, playbyplayv3, leaguedashptstats, playerindex
 from nbamind.data.fetcher import fetch
 import pandas as pd
 import polars as pl
@@ -37,7 +37,7 @@ if __name__ == "__main__":
     print(seasons_list)
 
 
-    # fetches all active players in a season, but doesn't seem too useful tbh
+    # fetches all active players in a season, but doesn't seem too useful tbh; it shows all players where ROSTERSTATUS=1 if that player was on a roster during the 2019-2020 season
     result = fetch(commonallplayers.CommonAllPlayers, {"league_id": "00", "season": "2019-20"})
     print_details(result, "CommonAllPlayers")
     # print("endpoint:", result["meta"]["endpoint"])
@@ -179,11 +179,26 @@ if __name__ == "__main__":
                                                                     })
     print_details(result, "HustleStatsPlayer")
 
+    for measure_type in ["SpeedDistance", "Rebounding", "Possessions", "CatchShoot", "PullUpShot", "Defense", "Drives", "Passing", "ElbowTouch", "PostTouch", "PaintTouch", "Efficiency"]:
+        result = fetch(leaguedashptstats.LeagueDashPtStats, {"player_or_team": "Player",
+                                                            "pt_measure_type": measure_type, # ^(SpeedDistance)|(Rebounding)|(Possessions)|(CatchShoot)|(PullUpShot)|(Defense)|(Drives)|(Passing)|(ElbowTouch)|(PostTouch)|(PaintTouch)|(Efficiency)$
+                                                            "per_mode_simple": "PerGame", # Totals or PerGame
+                                                            "season_type_all_star": "Regular Season",
+                                                            "league_id_nullable": "00",
+                                                            })
+        print_details(result, "LeagueDashPtStats")
+
     # result = fetch(playbyplayv3.PlayByPlayV3, {"start_period": "all",
     #                                            "end_period": "all",
     #                                            "game_id": "SOME GAME ID HERE",
     #                                           })
     # print_details(result, "PlayByPlayV3")
+
+    result = fetch(playerindex.PlayerIndex, {# "active_nullable": "1", # 1 is only active players, 0 is all players (default)
+                                             "league_id": "00",
+                                             "season": "2019-20",
+                                            })
+    print_details(result, "PlayerIndex")
 
     # consider playerdashboardbyshootingsplits; ShotTypePlayerDashboard breaks down the different types of shots they take (e.g., amount of alley oop dunks, amount of cutting finger roll layups, etc.), ShotTypeSummaryPlayerDashboard gives more general shot types (like just alley oop, bank shot, dunk, etc.) ShotAreaPlayerDashboard shows where on the court they shot from, and we can also see unassisted vs assisted shot frequency; this is very useful for determining play style
     # playerdashptreb gives more details on rebounding (e.g., contested vs uncontested rebounds, distance of shots rebounded, distance of rebounds themselves)

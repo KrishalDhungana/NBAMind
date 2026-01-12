@@ -4,14 +4,34 @@ NBAMind: processing.py
 ------------------------------------------------------------------------------------------
 This script constitutes the primary data ingestion pipeline for the Player Similarity Engine.
 It systematically fetches NBA player statistics for all seasons from 2000-01 to the present,
-focuses on data points that reveal player playstyle, archetypes, and on-court tendencies,
-and joins them into a master table.
+focusing on data points that reveal player playstyle, archetypes, and on-court tendencies.
+
+The pipeline operates in two main stages to maximize efficiency:
+1.  **League-Wide Data Fetch:** For each season, it makes single API calls to 'LeagueDash'
+    endpoints. These endpoints provide a wide array of statistics for all players in the
+    league, including traditional, advanced, shooting location, defensive, and hustle stats.
+    This data is saved to a structured directory per season.
+
+2.  **Targeted Player-Specific Fetch:** After gathering the league-wide data, the script
+    identifies players who meet a minimum threshold for games played and total minutes.
+    This filters out players with insignificant sample sizes. For this qualified subset
+    of players, it then makes more granular, individual 'PlayerDash' API calls to obtain
+    critical playstyle context not available in the league-wide data, such as shot-creation
+    habits (pull-ups vs. catch-and-shoot), detailed rebounding stats (contested vs.
+    uncontested), and shot-assist context (assisted vs. unassisted).
+
+All data fetching is routed through the robust `fetcher.py` wrapper, which handles
+caching, rate-limiting, and retries automatically. The final output is stored in the
+`data/processed` directory, organized by season and data type in the efficient Parquet format.
+
+This modular and idempotent approach ensures that the data foundation for the similarity
+model is both comprehensive and efficiently acquired.
 ==========================================================================================
 """
 import logging
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import polars as pl
 from nba_api.stats.endpoints import (
@@ -80,7 +100,7 @@ LEAGUE_WIDE_ENDPOINTS = {
         "result_set": "LeagueDashPlayerStats",
     },
     # measure_type_detailed_defense = Misc: ['PLAYER_ID', 'PLAYER_NAME', 'NICKNAME', 'TEAM_ID', 'TEAM_ABBREVIATION', 'AGE', 'GP', 'W', 'L', 'W_PCT', 'MIN', 'PTS_OFF_TOV', 'PTS_2ND_CHANCE', 'PTS_FB', 'PTS_PAINT', 'OPP_PTS_OFF_TOV', 'OPP_PTS_2ND_CHANCE', 'OPP_PTS_FB', 'OPP_PTS_PAINT', 'BLK', 'BLKA', 'PF', 'PFD', 'NBA_FANTASY_PTS', 'GP_RANK', 'W_RANK', 'L_RANK', 'W_PCT_RANK', 'MIN_RANK', 'PTS_OFF_TOV_RANK', 'PTS_2ND_CHANCE_RANK', 'PTS_FB_RANK', 'PTS_PAINT_RANK', 'OPP_PTS_OFF_TOV_RANK', 'OPP_PTS_2ND_CHANCE_RANK', 'OPP_PTS_FB_RANK', 'OPP_PTS_PAINT_RANK', 'BLK_RANK', 'BLKA_RANK', 'PF_RANK', 'PFD_RANK', 'NBA_FANTASY_PTS_RANK', 'TEAM_COUNT']
-    # measure_type_detailed_defense = Scoring: ['PLAYER_ID', 'PLAYER_NAME', 'NICKNAME', 'TEAM_ID', 'TEAM_ABBREVIATION', 'AGE', 'GP', 'W', 'L', 'W_PCT', 'MIN', 'PCT_FGA_2PT', 'PCT_FGA_3PT', 'PCT_PTS_2PT', 'PCT_PTS_2PT_MR', 'PCT_PTS_3PT', 'PCT_PTS_FB', 'PCT_PTS_FT', 'PCT_PTS_OFF_TOV', 'PCT_PTS_PAINT', 'PCT_AST_2PM', 'PCT_UAST_2PM', 'PCT_AST_3PM', 'PCT_UAST_3PM', 'PCT_AST_FGM', 'PCT_UAST_FGM', 'FGM', 'FGA', 'FG_PCT', 'GP_RANK', 'W_RANK', 'L_RANK', 'W_PCT_RANK', 'MIN_RANK', 'PCT_FGA_2PT_RANK', 'PCT_FGA_3PT_RANK', 'PCT_PTS_2PT_RANK', 'PCT_PTS_2PT_MR_RANK', 'PCT_PTS_3PT_RANK', 'PCT_PTS_FB_RANK', 'PCT_PTS_FT_RANK', 'PCT_PTS_OFF_TOV_RANK', 'PCT_PTS_PAINT_RANK', 'PCT_AST_2PM_RANK', 'PCT_UAST_2PM_RANK', 'PCT_AST_3PM_RANK', 'PCT_UAST_3PM_RANK', 'PCT_AST_FGM_RANK', 'PCT_UAST_FGM_RANK', 'FGM_RANK', 'FGA_RANK', 'FG_PCT_RANK', 'TEAM_COUNT']
+    # measure_type_detailed_defense = Scoring: ['PLAYER_ID', 'PLAYER_NAME', 'NICKNAME', 'TEAM_ID', 'TEAM_ABBREVIATION', 'AGE', 'GP', 'W', 'L', 'W_PCT', 'MIN', 'PCT_FGA_2PT', 'PCT_FGA_3PT', 'PCT_PTS_2PT', 'PCT_PTS_2PT_MR', 'PCT_PTS_3PT', 'PCT_PTS_FB', 'PCT_PTS_FT', 'PCT_PTS_OFF_TOV', 'PCT_PTS_PAINT', 'PCT_AST_2PM', 'PCT_UAST_2PM', 'PCT_AST_3PM', 'PCT_UAST_3PM', 'PCT_AST_FGM', 'PCT_UAST_FGM', 'FGM', 'FGA', 'FG_PCT', 'GP_RANK', 'W_RANK', 'L_RANK', 'W_PCT_RANK', 'MIN_RANK', 'PCT_FGA_2PT_RANK', 'PCT_FGA_3PT_RANK', 'PCT_PTS_2PT_RANK', 'PCT_PTS_2PT_MR_RANK', 'PCT_PTS_3PT_RANK', 'PCT_PTS_FB_RANK', 'PCT_PTS_FT_RANK', 'PCT_PTS_OFF_TOV_RANK', 'PCT_PTS_PAINT_RANK', 'PCT_AST_2PM_RANK', 'PCT_UAST_2PM_RANK', 'PCT_AST_3PM_RANK', 'PCT_UAST_3PM_RANK', 'PCT_AST_FGM_RANK', 'PCT_UAST_FGM_RANK', 'FGM_RANK', 'FGA_RANK', 'FG_PCT_RANK', 'TEAM_COUNT'] 
     # measure_type_detailed_defense = Usage: ['PLAYER_ID', 'PLAYER_NAME', 'NICKNAME', 'TEAM_ID', 'TEAM_ABBREVIATION', 'AGE', 'GP', 'W', 'L', 'W_PCT', 'MIN', 'USG_PCT', 'PCT_FGM', 'PCT_FGA', 'PCT_FG3M', 'PCT_FG3A', 'PCT_FTM', 'PCT_FTA', 'PCT_OREB', 'PCT_DREB', 'PCT_REB', 'PCT_AST', 'PCT_TOV', 'PCT_STL', 'PCT_BLK', 'PCT_BLKA', 'PCT_PF', 'PCT_PFD', 'PCT_PTS', 'GP_RANK', 'W_RANK', 'L_RANK', 'W_PCT_RANK', 'MIN_RANK', 'USG_PCT_RANK', 'PCT_FGM_RANK', 'PCT_FGA_RANK', 'PCT_FG3M_RANK', 'PCT_FG3A_RANK', 'PCT_FTM_RANK', 'PCT_FTA_RANK', 'PCT_OREB_RANK', 'PCT_DREB_RANK', 'PCT_REB_RANK', 'PCT_AST_RANK', 'PCT_TOV_RANK', 'PCT_STL_RANK', 'PCT_BLK_RANK', 'PCT_BLKA_RANK', 'PCT_PF_RANK', 'PCT_PFD_RANK', 'PCT_PTS_RANK', 'TEAM_COUNT']
     # measure_type_detailed_defense = Defense: ['PLAYER_ID', 'PLAYER_NAME', 'NICKNAME', 'TEAM_ID', 'TEAM_ABBREVIATION', 'AGE', 'GP', 'W', 'L', 'W_PCT', 'MIN', 'DEF_RATING', 'DREB', 'DREB_PCT', 'PCT_DREB', 'STL', 'PCT_STL', 'BLK', 'PCT_BLK', 'OPP_PTS_OFF_TOV', 'OPP_PTS_2ND_CHANCE', 'OPP_PTS_FB', 'OPP_PTS_PAINT', 'DEF_WS', 'DEF_WS_RAW', 'GP_RANK', 'W_RANK', 'L_RANK', 'W_PCT_RANK', 'MIN_RANK', 'DEF_RATING_RANK', 'DREB_RANK', 'DREB_PCT_RANK', 'PCT_DREB_RANK', 'STL_RANK', 'PCT_STL_RANK', 'BLK_RANK', 'PCT_BLK_RANK', 'OPP_PTS_OFF_TOV_RANK', 'OPP_PTS_2ND_CHANCE_RANK', 'OPP_PTS_FB_RANK', 'OPP_PTS_PAINT_RANK', 'DEF_WS_RANK']
     # "shot_locations": {
@@ -310,180 +330,109 @@ def extract_dataframe_from_response(
         return None
 
 # ----------------------------
-# Core Logic
+# Core Fetching Logic
 # ----------------------------
 
-def fetch_data_for_season(season: str) -> Dict[str, pl.DataFrame]:
+def fetch_and_save_data(
+    endpoint_def: Dict[str, Any], output_path: Path, params: Dict[str, Any]
+):
     """
-    Fetches all league-wide data for a given season and returns a dictionary
-    of DataFrames.
+    Generic fetch and save function. It takes endpoint definitions and parameters,
+    fetches the data, and saves it to a specified parquet file.
     """
-    logging.info(f"--- Processing Season: {season} ---")
-    season_data = {}
+    if output_path.exists():
+        logging.info(f"SKIPPING - already exists: {output_path.name}")
+        return
 
-    # Fetch League-Wide Data
-    logging.info("=> Fetching league-wide data...")
-    for name, endpoint_def in LEAGUE_WIDE_ENDPOINTS.items():
-        params = endpoint_def["params"].copy()
-        params["season"] = season
-        response = fetch(endpoint_def["cls"], params)
-        if response:
-            df = extract_dataframe_from_response(response, endpoint_def["result_set"])
+    response = fetch(endpoint_def["cls"], params)
+
+    if response:
+        # Handle endpoints with single or multiple result sets
+        result_set_names = endpoint_def.get("result_sets", [endpoint_def["result_set"]])
+        
+        if len(result_set_names) > 1:
+            # For player-specific endpoints with multiple tables
+            for i, name in enumerate(result_set_names):
+                df = extract_dataframe_from_response(response, name)
+                if df is not None and not df.is_empty():
+                    # Suffix file path to avoid overwrites for the same endpoint
+                    p = output_path.with_name(f"{output_path.stem}_{i}_{name}.parquet")
+                    df.write_parquet(p)
+            logging.info(f"SAVED multiple dataframes for: {output_path.stem}")
+        else:
+            # For league-wide endpoints with a single table
+            df = extract_dataframe_from_response(response, result_set_names[0])
             if df is not None and not df.is_empty():
-                season_data[name] = df.with_columns(pl.lit(season).alias("SEASON_YEAR"))
-
-    return season_data
-
-
-def aggregate_traded_players(df: pl.DataFrame) -> pl.DataFrame:
-    """
-    Aggregates stats for players who were traded mid-season.
-
-    This function handles the 'TOT' (Total) team abbreviation, which represents
-    a player's combined stats for the season across all teams they played for.
-    When a player is traded, the API provides separate rows for each team stint
-    plus a summary 'TOT' row.
-
-    The strategy is to:
-    1. Identify players with a 'TOT' row, indicating they were traded.
-    2. For these players, keep only the 'TOT' row as it contains the correct
-       season averages and totals.
-    3. For players who were not traded (played for a single team), their single
-       row is kept as is.
-
-    This ensures that each player is represented by a single, accurate row of
-    statistics for the season, preventing double-counting and correctly
-    reflecting their overall performance.
-    """
-    if "TEAM_ABBREVIATION" not in df.columns:
-        logging.warning("'TEAM_ABBREVIATION' column not found. Skipping trade aggregation.")
-        return df
-
-    # Find players who have a 'TOT' entry, meaning they were traded
-    traded_player_ids = df.filter(pl.col("TEAM_ABBREVIATION") == "TOT")[
-        "PLAYER_ID"
-    ].unique().to_list()
-
-    # Separate traded players from non-traded players
-    traded_df = df.filter(pl.col("PLAYER_ID").is_in(traded_player_ids))
-    nontraded_df = df.filter(~pl.col("PLAYER_ID").is_in(traded_player_ids))
-
-    # For traded players, only keep their total ('TOT') stats for the season
-    aggregated_traded_df = traded_df.filter(pl.col("TEAM_ABBREVIATION") == "TOT")
-
-    # Combine the non-traded players with the aggregated stats of traded players
-    return pl.concat([nontraded_df, aggregated_traded_df])
-
-
-def join_dataframes(
-    dataframes: Dict[str, pl.DataFrame], season: str
-) -> Optional[pl.DataFrame]:
-    """
-    Joins all league-wide dataframes for a season into a single master dataframe.
-    """
-    if not dataframes:
-        logging.warning(f"No dataframes to join for season {season}.")
-        return None
-
-    # Use 'bio_stats' as the base, as it contains fundamental player info.
-    base_df_name = "bio_stats"
-    if base_df_name not in dataframes:
-        logging.error(f"'{base_df_name}' not found for season {season}, cannot join.")
-        return None
-
-    # Handle traded players in the base table first.
-    base_df = aggregate_traded_players(dataframes[base_df_name])
-    join_keys = ["PLAYER_ID", "SEASON_YEAR"]
-
-    # Iteratively join the rest of the dataframes.
-    for name, df in dataframes.items():
-        if name == base_df_name:
-            continue
-
-        processed_df = df.clone()
-
-        # Standardize column names before processing
-        if "TEAM_ABBREVIATION" not in processed_df.columns and "PLAYER_LAST_TEAM_ABBREVIATION" in processed_df.columns:
-            logging.info(f"Renaming 'PLAYER_LAST_TEAM_ABBREVIATION' to 'TEAM_ABBREVIATION' for '{name}' table.")
-            processed_df = processed_df.rename({"PLAYER_LAST_TEAM_ABBREVIATION": "TEAM_ABBREVIATION"})
-        
-        if "PLAYER_ID" not in processed_df.columns and "CLOSE_DEF_PERSON_ID" in processed_df.columns:
-            logging.info(f"Renaming 'CLOSE_DEF_PERSON_ID' to 'PLAYER_ID' for '{name}' table.")
-            processed_df = processed_df.rename({"CLOSE_DEF_PERSON_ID": "PLAYER_ID"})
-
-        # Aggregate stats for traded players in the right-side table before joining.
-        processed_df = aggregate_traded_players(processed_df)
-
-        # Identify and warn about duplicate columns before the join.
-        base_cols = set(base_df.columns)
-        right_cols = set(processed_df.columns)
-        common_cols = (base_cols & right_cols) - set(join_keys)
-
-        if common_cols:
-            logging.warning(
-                f"Duplicate columns found when joining '{name}' for season {season}: {common_cols}. "
-                f"These will be dropped from the right-side table."
-            )
-            processed_df = processed_df.drop(list(common_cols))
-
-        # Perform the join
-        base_df = base_df.join(processed_df, on=join_keys, how="left")
-
-        # --- Data Integrity Check ---
-        # After joining, check if any players from the base table are missing data
-        # from the table that was just joined. This is identified by nulls in a
-        # column that is unique to the right-side table.
-        
-        # Heuristic: Pick a column that is likely not null if the data exists.
-        # This isn't perfect, but a good proxy.
-        unique_col_to_check = next((col for col in processed_df.columns if col not in join_keys), None)
-        
-        if unique_col_to_check:
-            missing_data_count = base_df.filter(pl.col(unique_col_to_check).is_null()).height
-            if missing_data_count > 0:
-                logging.warning(
-                    f"Post-join check: {missing_data_count} players are missing data "
-                    f"from the '{name}' table for season {season}. "
-                    f"(Checked using column: '{unique_col_to_check}')"
-                )
-
-    return base_df
+                df.write_parquet(output_path)
+                logging.info(f"SAVED: {output_path.name}")
 
 
 def run_pipeline():
     """
-    Main function to execute the full data ingestion and processing pipeline.
-    It fetches data for each season, joins it into a master table per season,
-    and then combines all seasons into a single parquet file.
+    Main function to execute the full data ingestion pipeline.
     """
     seasons = get_seasons_list()
     seasons = ["2019-20", "2020-21"] # just temporary
     logging.info(f"Pipeline starting for seasons: {seasons}")
 
-    all_season_master_dfs = []
-
     for season in seasons:
-        # 1. Fetch all raw data for the season
-        season_dataframes = fetch_data_for_season(season)
+        logging.info(f"--- Processing Season: {season} ---")
+        season_dir = PROCESSED_DIR / season
+        season_dir.mkdir(parents=True, exist_ok=True)
 
-        # 2. Join all dataframes for the season
-        if season_dataframes:
-            master_season_df = join_dataframes(season_dataframes, season)
-            if master_season_df is not None:
-                all_season_master_dfs.append(master_season_df)
-                logging.info(f"Successfully joined data for season {season}.")
+        # --- Stage 1: Fetch League-Wide Data ---
+        logging.info("=> Stage 1: Fetching league-wide data...")
+        for name, endpoint_def in LEAGUE_WIDE_ENDPOINTS.items():
+            output_path = season_dir / f"{name}.parquet"
+            params = endpoint_def["params"].copy()
+            params["season"] = season
+            fetch_and_save_data(endpoint_def, output_path, params)
 
-    # 3. Combine all seasons and save to a single file
-    if all_season_master_dfs:
-        final_master_df = pl.concat(all_season_master_dfs)
-        output_path = PROCESSED_DIR / "master_player_analytics.parquet"
-        PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-        final_master_df.write_parquet(output_path)
-        logging.info(f"--- Pipeline finished ---")
-        logging.info(f"Master player analytics table saved to: {output_path}")
-        logging.info(f"Final table shape: {final_master_df.shape}")
-    else:
-        logging.warning("--- Pipeline finished, but no data was processed or saved. ---")
+        # # --- Stage 2: Fetch Player-Specific Data ---
+        # logging.info("=> Stage 2: Fetching player-specific data...")
+        # base_stats_path = season_dir / "base_stats.parquet"
+        # if not base_stats_path.exists():
+        #     logging.error(
+        #         f"Cannot proceed to Stage 2: base_stats.parquet not found for {season}."
+        #     )
+        #     continue
+        
+        # # In polars, it's good practice to wrap file reads in try-except blocks
+        # try:
+        #     base_df = pl.read_parquet(base_stats_path)
+        # except Exception as e:
+        #     logging.error(f"Could not read parquet file {base_stats_path}: {e}")
+        #     continue
+
+        # qualified_players_df = base_df.filter(
+        #     (pl.col("GP").cast(pl.Int32) >= MIN_GAMES_PLAYED)
+        #     & (pl.col("MIN").cast(pl.Float32) >= MIN_MINUTES_PLAYED)
+        # )
+
+        # player_ids = qualified_players_df.get_column("PLAYER_ID").unique().to_list()
+        # logging.info(
+        #     f"Found {len(player_ids)} players meeting criteria (GP>={MIN_GAMES_PLAYED}, MIN>={MIN_MINUTES_PLAYED}) for {season}."
+        # )
+
+        # player_dir = season_dir / "player_specific"
+        # player_dir.mkdir(exist_ok=True)
+
+        # for player_id in player_ids:
+        #     for name, endpoint_def in PLAYER_SPECIFIC_ENDPOINTS.items():
+        #         output_stem = f"{player_id}_{name}"
+        #         # We check for existence of the first file to see if we should skip
+        #         if list(player_dir.glob(f"{output_stem}*.parquet")):
+        #             logging.info(f"SKIPPING - already exists: {output_stem} files")
+        #             continue
+                
+        #         output_path = player_dir / f"{output_stem}.parquet"
+        #         params = endpoint_def["params"].copy()
+        #         params["Season"] = season
+        #         params["PlayerID"] = player_id
+        #         fetch_and_save_data(endpoint_def, output_path, params)
+
+    logging.info("--- Pipeline finished ---")
+
 
 if __name__ == "__main__":
     run_pipeline()

@@ -355,14 +355,10 @@ def aggregate_traded_players(df: pl.DataFrame) -> pl.DataFrame:
     statistics for the season, preventing double-counting and correctly
     reflecting their overall performance.
     """
-    if "TEAM_ABBREVIATION" not in df.columns:
-        logging.warning("'TEAM_ABBREVIATION' column not found. Skipping trade aggregation.")
-        return df
-
     # Find players who have a 'TOT' entry, meaning they were traded
     traded_player_ids = df.filter(pl.col("TEAM_ABBREVIATION") == "TOT")[
         "PLAYER_ID"
-    ].unique().to_list()
+    ].unique()
 
     # Separate traded players from non-traded players
     traded_df = df.filter(pl.col("PLAYER_ID").is_in(traded_player_ids))
@@ -400,19 +396,8 @@ def join_dataframes(
         if name == base_df_name:
             continue
 
-        processed_df = df.clone()
-
-        # Standardize column names before processing
-        if "TEAM_ABBREVIATION" not in processed_df.columns and "PLAYER_LAST_TEAM_ABBREVIATION" in processed_df.columns:
-            logging.info(f"Renaming 'PLAYER_LAST_TEAM_ABBREVIATION' to 'TEAM_ABBREVIATION' for '{name}' table.")
-            processed_df = processed_df.rename({"PLAYER_LAST_TEAM_ABBREVIATION": "TEAM_ABBREVIATION"})
-        
-        if "PLAYER_ID" not in processed_df.columns and "CLOSE_DEF_PERSON_ID" in processed_df.columns:
-            logging.info(f"Renaming 'CLOSE_DEF_PERSON_ID' to 'PLAYER_ID' for '{name}' table.")
-            processed_df = processed_df.rename({"CLOSE_DEF_PERSON_ID": "PLAYER_ID"})
-
         # Aggregate stats for traded players in the right-side table before joining.
-        processed_df = aggregate_traded_players(processed_df)
+        processed_df = aggregate_traded_players(df)
 
         # Identify and warn about duplicate columns before the join.
         base_cols = set(base_df.columns)
