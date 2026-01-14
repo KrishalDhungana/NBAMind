@@ -38,7 +38,7 @@ logging.basicConfig(
 PROCESSED_DIR = Path("data/processed")
 # Minimum thresholds to qualify a player for detailed, per-player API calls
 MIN_GAMES_PLAYED = 15
-MIN_MINUTES_PLAYED = 300 # ~20 min over 15 games
+MIN_MPG = 20
 
 # Endpoint definitions now contain all static parameters.
 # The 'Season' and 'PlayerID' parameters are added dynamically during execution.
@@ -50,14 +50,15 @@ LEAGUE_WIDE_ENDPOINTS = {
     #     },
     #     "result_set": "CommonAllPlayers",
     # },
-    "bio_stats": {
-        "cls": leaguedashplayerbiostats.LeagueDashPlayerBioStats, # ['PLAYER_ID', 'PLAYER_NAME', 'TEAM_ID', 'TEAM_ABBREVIATION', 'AGE', 'PLAYER_HEIGHT', 'PLAYER_HEIGHT_INCHES', 'PLAYER_WEIGHT', 'COLLEGE', 'COUNTRY', 'DRAFT_YEAR', 'DRAFT_ROUND', 'DRAFT_NUMBER', 'GP', 'PTS', 'REB', 'AST', 'NET_RATING', 'OREB_PCT', 'DREB_PCT', 'USG_PCT', 'TS_PCT', 'AST_PCT']
+    "base_stats": {
+        "cls": leaguedashplayerstats.LeagueDashPlayerStats, # ['PLAYER_ID', 'PLAYER_NAME', 'NICKNAME', 'TEAM_ID', 'TEAM_ABBREVIATION', 'AGE', 'GP', 'W', 'L', 'W_PCT', 'MIN', 'FGM', 'FGA', 'FG_PCT', 'FG3M', 'FG3A', 'FG3_PCT', 'FTM', 'FTA', 'FT_PCT', 'OREB', 'DREB', 'REB', 'AST', 'TOV', 'STL', 'BLK', 'BLKA', 'PF', 'PFD', 'PTS', 'PLUS_MINUS', 'NBA_FANTASY_PTS', 'DD2', 'TD3', 'WNBA_FANTASY_PTS', 'GP_RANK', 'W_RANK', 'L_RANK', 'W_PCT_RANK', 'MIN_RANK', 'FGM_RANK', 'FGA_RANK', 'FG_PCT_RANK', 'FG3M_RANK', 'FG3A_RANK', 'FG3_PCT_RANK', 'FTM_RANK', 'FTA_RANK', 'FT_PCT_RANK', 'OREB_RANK', 'DREB_RANK', 'REB_RANK', 'AST_RANK', 'TOV_RANK', 'STL_RANK', 'BLK_RANK', 'BLKA_RANK', 'PF_RANK', 'PFD_RANK', 'PTS_RANK', 'PLUS_MINUS_RANK', 'NBA_FANTASY_PTS_RANK', 'DD2_RANK', 'TD3_RANK', 'WNBA_FANTASY_PTS_RANK', 'TEAM_COUNT']
         "params": {
-            "per_mode_simple": "PerGame",
+            "measure_type_detailed_defense": "Base",
+            "per_mode_detailed": "Per100Possessions",
             "season_type_all_star": "Regular Season",
-            "league_id": "00",
+            "league_id_nullable": "00",
         },
-        "result_set": "LeagueDashPlayerBioStats",
+        "result_set": "LeagueDashPlayerStats",
     },
     "adv_stats": {
         "cls": leaguedashplayerstats.LeagueDashPlayerStats, # ['PLAYER_ID', 'PLAYER_NAME', 'NICKNAME', 'TEAM_ID', 'TEAM_ABBREVIATION', 'AGE', 'GP', 'W', 'L', 'W_PCT', 'MIN', 'E_OFF_RATING', 'OFF_RATING', 'sp_work_OFF_RATING', 'E_DEF_RATING', 'DEF_RATING', 'sp_work_DEF_RATING', 'E_NET_RATING', 'NET_RATING', 'sp_work_NET_RATING', 'AST_PCT', 'AST_TO', 'AST_RATIO', 'OREB_PCT', 'DREB_PCT', 'REB_PCT', 'TM_TOV_PCT', 'E_TOV_PCT', 'EFG_PCT', 'TS_PCT', 'USG_PCT', 'E_USG_PCT', 'E_PACE', 'PACE', 'PACE_PER40', 'sp_work_PACE', 'PIE', 'POSS', 'FGM', 'FGA', 'FGM_PG', 'FGA_PG', 'FG_PCT', 'GP_RANK', 'W_RANK', 'L_RANK', 'W_PCT_RANK', 'MIN_RANK', 'E_OFF_RATING_RANK', 'OFF_RATING_RANK', 'sp_work_OFF_RATING_RANK', 'E_DEF_RATING_RANK', 'DEF_RATING_RANK', 'sp_work_DEF_RATING_RANK', 'E_NET_RATING_RANK', 'NET_RATING_RANK', 'sp_work_NET_RATING_RANK', 'AST_PCT_RANK', 'AST_TO_RANK', 'AST_RATIO_RANK', 'OREB_PCT_RANK', 'DREB_PCT_RANK', 'REB_PCT_RANK', 'TM_TOV_PCT_RANK', 'E_TOV_PCT_RANK', 'EFG_PCT_RANK', 'TS_PCT_RANK', 'USG_PCT_RANK', 'E_USG_PCT_RANK', 'E_PACE_RANK', 'PACE_RANK', 'sp_work_PACE_RANK', 'PIE_RANK', 'FGM_RANK', 'FGA_RANK', 'FGM_PG_RANK', 'FGA_PG_RANK', 'FG_PCT_RANK', 'TEAM_COUNT']
@@ -69,10 +70,10 @@ LEAGUE_WIDE_ENDPOINTS = {
         },
         "result_set": "LeagueDashPlayerStats",
     },
-    "base_stats": {
-        "cls": leaguedashplayerstats.LeagueDashPlayerStats, # ['PLAYER_ID', 'PLAYER_NAME', 'NICKNAME', 'TEAM_ID', 'TEAM_ABBREVIATION', 'AGE', 'GP', 'W', 'L', 'W_PCT', 'MIN', 'FGM', 'FGA', 'FG_PCT', 'FG3M', 'FG3A', 'FG3_PCT', 'FTM', 'FTA', 'FT_PCT', 'OREB', 'DREB', 'REB', 'AST', 'TOV', 'STL', 'BLK', 'BLKA', 'PF', 'PFD', 'PTS', 'PLUS_MINUS', 'NBA_FANTASY_PTS', 'DD2', 'TD3', 'WNBA_FANTASY_PTS', 'GP_RANK', 'W_RANK', 'L_RANK', 'W_PCT_RANK', 'MIN_RANK', 'FGM_RANK', 'FGA_RANK', 'FG_PCT_RANK', 'FG3M_RANK', 'FG3A_RANK', 'FG3_PCT_RANK', 'FTM_RANK', 'FTA_RANK', 'FT_PCT_RANK', 'OREB_RANK', 'DREB_RANK', 'REB_RANK', 'AST_RANK', 'TOV_RANK', 'STL_RANK', 'BLK_RANK', 'BLKA_RANK', 'PF_RANK', 'PFD_RANK', 'PTS_RANK', 'PLUS_MINUS_RANK', 'NBA_FANTASY_PTS_RANK', 'DD2_RANK', 'TD3_RANK', 'WNBA_FANTASY_PTS_RANK', 'TEAM_COUNT']
+    "defense_stats": {
+        "cls": leaguedashplayerstats.LeagueDashPlayerStats, # ['PLAYER_ID', 'PLAYER_NAME', 'NICKNAME', 'TEAM_ID', 'TEAM_ABBREVIATION', 'AGE', 'GP', 'W', 'L', 'W_PCT', 'MIN', 'DEF_RATING', 'DREB', 'DREB_PCT', 'PCT_DREB', 'STL', 'PCT_STL', 'BLK', 'PCT_BLK', 'OPP_PTS_OFF_TOV', 'OPP_PTS_2ND_CHANCE', 'OPP_PTS_FB', 'OPP_PTS_PAINT', 'DEF_WS', 'DEF_WS_RAW', 'GP_RANK', 'W_RANK', 'L_RANK', 'W_PCT_RANK', 'MIN_RANK', 'DEF_RATING_RANK', 'DREB_RANK', 'DREB_PCT_RANK', 'PCT_DREB_RANK', 'STL_RANK', 'PCT_STL_RANK', 'BLK_RANK', 'PCT_BLK_RANK', 'OPP_PTS_OFF_TOV_RANK', 'OPP_PTS_2ND_CHANCE_RANK', 'OPP_PTS_FB_RANK', 'OPP_PTS_PAINT_RANK', 'DEF_WS_RANK']
         "params": {
-            "measure_type_detailed_defense": "Base",
+            "measure_type_detailed_defense": "Defense",
             "per_mode_detailed": "Per100Possessions",
             "season_type_all_star": "Regular Season",
             "league_id_nullable": "00",
@@ -83,6 +84,15 @@ LEAGUE_WIDE_ENDPOINTS = {
     # measure_type_detailed_defense = Scoring: ['PLAYER_ID', 'PLAYER_NAME', 'NICKNAME', 'TEAM_ID', 'TEAM_ABBREVIATION', 'AGE', 'GP', 'W', 'L', 'W_PCT', 'MIN', 'PCT_FGA_2PT', 'PCT_FGA_3PT', 'PCT_PTS_2PT', 'PCT_PTS_2PT_MR', 'PCT_PTS_3PT', 'PCT_PTS_FB', 'PCT_PTS_FT', 'PCT_PTS_OFF_TOV', 'PCT_PTS_PAINT', 'PCT_AST_2PM', 'PCT_UAST_2PM', 'PCT_AST_3PM', 'PCT_UAST_3PM', 'PCT_AST_FGM', 'PCT_UAST_FGM', 'FGM', 'FGA', 'FG_PCT', 'GP_RANK', 'W_RANK', 'L_RANK', 'W_PCT_RANK', 'MIN_RANK', 'PCT_FGA_2PT_RANK', 'PCT_FGA_3PT_RANK', 'PCT_PTS_2PT_RANK', 'PCT_PTS_2PT_MR_RANK', 'PCT_PTS_3PT_RANK', 'PCT_PTS_FB_RANK', 'PCT_PTS_FT_RANK', 'PCT_PTS_OFF_TOV_RANK', 'PCT_PTS_PAINT_RANK', 'PCT_AST_2PM_RANK', 'PCT_UAST_2PM_RANK', 'PCT_AST_3PM_RANK', 'PCT_UAST_3PM_RANK', 'PCT_AST_FGM_RANK', 'PCT_UAST_FGM_RANK', 'FGM_RANK', 'FGA_RANK', 'FG_PCT_RANK', 'TEAM_COUNT']
     # measure_type_detailed_defense = Usage: ['PLAYER_ID', 'PLAYER_NAME', 'NICKNAME', 'TEAM_ID', 'TEAM_ABBREVIATION', 'AGE', 'GP', 'W', 'L', 'W_PCT', 'MIN', 'USG_PCT', 'PCT_FGM', 'PCT_FGA', 'PCT_FG3M', 'PCT_FG3A', 'PCT_FTM', 'PCT_FTA', 'PCT_OREB', 'PCT_DREB', 'PCT_REB', 'PCT_AST', 'PCT_TOV', 'PCT_STL', 'PCT_BLK', 'PCT_BLKA', 'PCT_PF', 'PCT_PFD', 'PCT_PTS', 'GP_RANK', 'W_RANK', 'L_RANK', 'W_PCT_RANK', 'MIN_RANK', 'USG_PCT_RANK', 'PCT_FGM_RANK', 'PCT_FGA_RANK', 'PCT_FG3M_RANK', 'PCT_FG3A_RANK', 'PCT_FTM_RANK', 'PCT_FTA_RANK', 'PCT_OREB_RANK', 'PCT_DREB_RANK', 'PCT_REB_RANK', 'PCT_AST_RANK', 'PCT_TOV_RANK', 'PCT_STL_RANK', 'PCT_BLK_RANK', 'PCT_BLKA_RANK', 'PCT_PF_RANK', 'PCT_PFD_RANK', 'PCT_PTS_RANK', 'TEAM_COUNT']
     # measure_type_detailed_defense = Defense: ['PLAYER_ID', 'PLAYER_NAME', 'NICKNAME', 'TEAM_ID', 'TEAM_ABBREVIATION', 'AGE', 'GP', 'W', 'L', 'W_PCT', 'MIN', 'DEF_RATING', 'DREB', 'DREB_PCT', 'PCT_DREB', 'STL', 'PCT_STL', 'BLK', 'PCT_BLK', 'OPP_PTS_OFF_TOV', 'OPP_PTS_2ND_CHANCE', 'OPP_PTS_FB', 'OPP_PTS_PAINT', 'DEF_WS', 'DEF_WS_RAW', 'GP_RANK', 'W_RANK', 'L_RANK', 'W_PCT_RANK', 'MIN_RANK', 'DEF_RATING_RANK', 'DREB_RANK', 'DREB_PCT_RANK', 'PCT_DREB_RANK', 'STL_RANK', 'PCT_STL_RANK', 'BLK_RANK', 'PCT_BLK_RANK', 'OPP_PTS_OFF_TOV_RANK', 'OPP_PTS_2ND_CHANCE_RANK', 'OPP_PTS_FB_RANK', 'OPP_PTS_PAINT_RANK', 'DEF_WS_RANK']
+    "bio_stats": {
+        "cls": leaguedashplayerbiostats.LeagueDashPlayerBioStats, # ['PLAYER_ID', 'PLAYER_NAME', 'TEAM_ID', 'TEAM_ABBREVIATION', 'AGE', 'PLAYER_HEIGHT', 'PLAYER_HEIGHT_INCHES', 'PLAYER_WEIGHT', 'COLLEGE', 'COUNTRY', 'DRAFT_YEAR', 'DRAFT_ROUND', 'DRAFT_NUMBER', 'GP', 'PTS', 'REB', 'AST', 'NET_RATING', 'OREB_PCT', 'DREB_PCT', 'USG_PCT', 'TS_PCT', 'AST_PCT']
+        "params": {
+            "per_mode_simple": "PerGame",
+            "season_type_all_star": "Regular Season",
+            "league_id": "00",
+        },
+        "result_set": "LeagueDashPlayerBioStats",
+    },
     # "shot_locations": {
     #     "cls": leaguedashplayershotlocations.LeagueDashPlayerShotLocations, # format is a bit iffy, but it shows fgm, fga, and fg_pct in the following areas: "Restricted Area", "In The Paint (Non-RA)", "Mid-Range", "Left Corner 3", "Right Corner 3", "Above the Break 3", "Backcourt"
     #     "params": {
@@ -106,7 +116,7 @@ LEAGUE_WIDE_ENDPOINTS = {
     "hustle": {
         "cls": leaguehustlestatsplayer.LeagueHustleStatsPlayer, # ['PLAYER_ID', 'PLAYER_NAME', 'TEAM_ID', 'TEAM_ABBREVIATION', 'AGE', 'G', 'MIN', 'CONTESTED_SHOTS', 'CONTESTED_SHOTS_2PT', 'CONTESTED_SHOTS_3PT', 'DEFLECTIONS', 'CHARGES_DRAWN', 'SCREEN_ASSISTS', 'SCREEN_AST_PTS', 'OFF_LOOSE_BALLS_RECOVERED', 'DEF_LOOSE_BALLS_RECOVERED', 'LOOSE_BALLS_RECOVERED', 'PCT_LOOSE_BALLS_RECOVERED_OFF', 'PCT_LOOSE_BALLS_RECOVERED_DEF', 'OFF_BOXOUTS', 'DEF_BOXOUTS', 'BOX_OUTS', 'BOX_OUT_PLAYER_TEAM_REBS', 'BOX_OUT_PLAYER_REBS', 'PCT_BOX_OUTS_OFF', 'PCT_BOX_OUTS_DEF', 'PCT_BOX_OUTS_TEAM_REB', 'PCT_BOX_OUTS_REB']
         "params": {
-            "per_mode_time": "Per48", # Totals, PerGame, Per48, Per40, Per36, or PerMinute
+            "per_mode_time": "PerGame", # Totals, PerGame, Per48, Per40, Per36, or PerMinute
             "season_type_all_star": "Regular Season",
             "league_id_nullable": "00",
         },
@@ -249,14 +259,14 @@ LEAGUE_WIDE_ENDPOINTS = {
 PLAYER_SPECIFIC_ENDPOINTS = {
     "shot_creation": {
         "cls": playerdashptshots.PlayerDashPtShots,
-        "params": {"PerMode": "Per100Possessions", "SeasonType": "Regular Season"},
+        "params": {"league_id": "00", "per_mode_simple": "PerGame", "season_type_all_star": "Regular Season"},
         "result_sets": [
-            "ShotClockShooting", # shows fga, fgm, fg_pct data of 3's and 2's for shot clock ranges
-            "DribbleShooting", # shows fga, fgm, fg_pct data of 3's and 2's taken with different number of dribbles
-            "GeneralShooting", # shows fga, fgm, fg_pct data of 3's and 2's for certain types (catch and shot, pull ups, less than 10 ft, other)
-            "TouchTimeShooting", # shows fga, fgm, fg_pct data of 3's and 2's taken for varying touch times (i.e., how long player held ball for before shooting)
-            "ClosestDefenderShooting10ftPlus", # shows fga, fgm, fg_pct data of 3's and 2's taken from all distances with different closest defender distances
-            "ClosestDefenderShooting10ftPlus", # shows fga, fgm, fg_pct data of 3's and 2's taken from more than 10 ft with different closest defender distances
+            "ShotClockShooting", # shows fga, fgm, fg_pct data of 3's and 2's for shot clock ranges: [PLAYER_ID	PLAYER_NAME_LAST_FIRST	SORT_ORDER	GP	G	SHOT_CLOCK_RANGE	FGA_FREQUENCY	FGM	FGA	FG_PCT	EFG_PCT	FG2A_FREQUENCY	FG2M	FG2A	FG2_PCT	FG3A_FREQUENCY	FG3M	FG3A	FG3_PCT]
+            "DribbleShooting", # shows fga, fgm, fg_pct data of 3's and 2's taken with different number of dribbles: [PLAYER_ID	PLAYER_NAME_LAST_FIRST	SORT_ORDER	GP	G	DRIBBLE_RANGE	FGA_FREQUENCY	FGM	FGA	FG_PCT	EFG_PCT	FG2A_FREQUENCY	FG2M	FG2A	FG2_PCT	FG3A_FREQUENCY	FG3M	FG3A	FG3_PCT]
+            "GeneralShooting", # shows fga, fgm, fg_pct data of 3's and 2's for certain types (catch and shot, pull ups, less than 10 ft, other): [PLAYER_ID	PLAYER_NAME_LAST_FIRST	SORT_ORDER	GP	G	SHOT_TYPE	FGA_FREQUENCY	FGM	FGA	FG_PCT	EFG_PCT	FG2A_FREQUENCY	FG2M	FG2A	FG2_PCT	FG3A_FREQUENCY	FG3M	FG3A	FG3_PCT]
+            "TouchTimeShooting", # shows fga, fgm, fg_pct data of 3's and 2's taken for varying touch times (i.e., how long player held ball for before shooting): [PLAYER_ID	PLAYER_NAME_LAST_FIRST	SORT_ORDER	GP	G	TOUCH_TIME_RANGE	FGA_FREQUENCY	FGM	FGA	FG_PCT	EFG_PCT	FG2A_FREQUENCY	FG2M	FG2A	FG2_PCT	FG3A_FREQUENCY	FG3M	FG3A	FG3_PCT]
+            "ClosestDefenderShooting", # shows fga, fgm, fg_pct data of 3's and 2's taken from all distances with different closest defender distances: [PLAYER_ID	PLAYER_NAME_LAST_FIRST	SORT_ORDER	GP	G	CLOSE_DEF_DIST_RANGE	FGA_FREQUENCY	FGM	FGA	FG_PCT	EFG_PCT	FG2A_FREQUENCY	FG2M	FG2A	FG2_PCT	FG3A_FREQUENCY	FG3M	FG3A	FG3_PCT]
+            "ClosestDefender10ftPlusShooting", # shows fga, fgm, fg_pct data of 3's and 2's taken from more than 10 ft with different closest defender distances: [PLAYER_ID	PLAYER_NAME_LAST_FIRST	SORT_ORDER	GP	G	CLOSE_DEF_DIST_RANGE	FGA_FREQUENCY	FGM	FGA	FG_PCT	EFG_PCT	FG2A_FREQUENCY	FG2M	FG2A	FG2_PCT	FG3A_FREQUENCY	FG3M	FG3A	FG3_PCT]
         ],
     },
     # "rebounding": {
@@ -266,14 +276,14 @@ PLAYER_SPECIFIC_ENDPOINTS = {
     # },
     "shot_splits": {
         "cls": playerdashboardbyshootingsplits.PlayerDashboardByShootingSplits,
-        "params": {"PerMode": "Per100Possessions", "SeasonType": "Regular Season"},
+        "params": {"league_id_nullable": "00", "per_mode_detailed": "Per100Possessions", "season_type_playoffs": "Regular Season"},
         "result_sets": [
-            # "ShotFiveFtData", # same as ShotEightFtData but just more granular distances
-            "ShotEightFtData", # shows fga, fgm, fg_pct data of both assisted and unassisted 3's and 2's from varying distances (<8 ft, 8-16 ft, 16-24 ft, 24+ ft, backcourt)
-            "ShotAreaPlayerDashboard", # shows fga, fgm, fg_pct data of both assisted and unassisted 3's and 2's at varying court locations (restricted area, left corner, etc.)
+            # "Shot5FTPlayerDashboard", # same as ShotEightFtData but just more granular distances
+            "Shot8FTPlayerDashboard", # shows fga, fgm, fg_pct data of both assisted and unassisted 3's and 2's from varying distances (<8 ft, 8-16 ft, 16-24 ft, 24+ ft, backcourt): [GROUP_SET	GROUP_VALUE	FGM	FGA	FG_PCT	FG3M	FG3A	FG3_PCT	EFG_PCT	BLKA	PCT_AST_2PM	PCT_UAST_2PM	PCT_AST_3PM	PCT_UAST_3PM	PCT_AST_FGM	PCT_UAST_FGM	FGM_RANK	FGA_RANK	FG_PCT_RANK	FG3M_RANK	FG3A_RANK	FG3_PCT_RANK	EFG_PCT_RANK	BLKA_RANK	PCT_AST_2PM_RANK	PCT_UAST_2PM_RANK	PCT_AST_3PM_RANK	PCT_UAST_3PM_RANK	PCT_AST_FGM_RANK	PCT_UAST_FGM_RANK]
+            "ShotAreaPlayerDashboard", # shows fga, fgm, fg_pct data of both assisted and unassisted 3's and 2's at varying court locations (restricted area, left corner, etc.): [GROUP_SET	GROUP_VALUE	FGM	FGA	FG_PCT	FG3M	FG3A	FG3_PCT	EFG_PCT	BLKA	PCT_AST_2PM	PCT_UAST_2PM	PCT_AST_3PM	PCT_UAST_3PM	PCT_AST_FGM	PCT_UAST_FGM	FGM_RANK	FGA_RANK	FG_PCT_RANK	FG3M_RANK	FG3A_RANK	FG3_PCT_RANK	EFG_PCT_RANK	BLKA_RANK	PCT_AST_2PM_RANK	PCT_UAST_2PM_RANK	PCT_AST_3PM_RANK	PCT_UAST_3PM_RANK	PCT_AST_FGM_RANK	PCT_UAST_FGM_RANK]
             # "AssistedShotPlayerDashboard",
-            "ShotTypeSummaryPlayerDashboard", # shows fga, fgm, fg_pct data of both assisted and unassisted 3's and 2's for varying shot types (alley oop, bank shot, dunk, fadeaway, etc.)
-            "ShotTypePlayerDashboard", # shows fga, fgm, fg_pct data of both assisted and unassisted 3's and 2's for more specific varying shot types (alley oop dunk shot, cutting dunk shot, driving bank hook shot, etc.)
+            "ShotTypeSummaryPlayerDashboard", # shows fga, fgm, fg_pct data of both assisted and unassisted 3's and 2's for varying shot types (alley oop, bank shot, dunk, fadeaway, etc.): [GROUP_SET	GROUP_VALUE	FGM	FGA	FG_PCT	FG3M	FG3A	FG3_PCT	EFG_PCT	BLKA	PCT_AST_2PM	PCT_UAST_2PM	PCT_AST_3PM	PCT_UAST_3PM	PCT_AST_FGM	PCT_UAST_FGM]
+            # "ShotTypePlayerDashboard", # shows fga, fgm, fg_pct data of both assisted and unassisted 3's and 2's for more specific varying shot types (alley oop dunk shot, cutting dunk shot, driving bank hook shot, etc.): [GROUP_SET	GROUP_VALUE	FGM	FGA	FG_PCT	FG3M	FG3A	FG3_PCT	EFG_PCT	BLKA	PCT_AST_2PM	PCT_UAST_2PM	PCT_AST_3PM	PCT_UAST_3PM	PCT_AST_FGM	PCT_UAST_FGM	FGM_RANK	FGA_RANK	FG_PCT_RANK	FG3M_RANK	FG3A_RANK	FG3_PCT_RANK	EFG_PCT_RANK	BLKA_RANK	PCT_AST_2PM_RANK	PCT_UAST_2PM_RANK	PCT_AST_3PM_RANK	PCT_UAST_3PM_RANK	PCT_AST_FGM_RANK	PCT_UAST_FGM_RANK]
         ],
     },
 }
@@ -309,6 +319,66 @@ def extract_dataframe_from_response(
         logging.error(f"Could not find result set '{result_set_name}': {e}")
         return None
 
+
+def _pivot_and_widen_player_stats(
+    df: pl.DataFrame, prefix: str
+) -> Optional[pl.DataFrame]:
+    """
+    Pivots a long DataFrame from the NBA API into a wide, one-row DataFrame.
+    This is used for player-specific endpoints that return data in a long format,
+    e.g., shooting stats for different dribble counts.
+
+    Args:
+        df: The long-format DataFrame, must contain 'GROUP_VALUE'.
+        prefix: A string to prepend to the new pivoted column names to avoid
+                collisions between different data types (e.g., 'DribbleShooting').
+
+    Returns:
+        A wide, one-row DataFrame or None if the input is invalid.
+    """
+    if df is None or "GROUP_VALUE" not in df.columns or df.is_empty():
+        return None
+
+    # Identify value columns to pivot (i.e., all columns except identifiers).
+    value_cols = [
+        c
+        for c in df.columns
+        if c
+        not in [
+            "GROUP_VALUE",
+            "GROUP_SET",
+            "PLAYER_ID",
+            "PLAYER_NAME",
+            "NICKNAME",
+            "TEAM_ID",
+            "TEAM_ABBREVIATION",
+            "AGE",
+        ]
+    ]
+
+    # Sanitize GROUP_VALUE strings to be valid parts of column names.
+    df = df.with_columns(
+        sanitized_group=pl.col("GROUP_VALUE").str.replace_all(r"[^a-zA-Z0-9_+()]", "_")
+    )
+
+    # Add a dummy index to pivot on, creating a single row output.
+    df = df.with_columns(_pivot_index=pl.lit(0))
+
+    # Perform the pivot.
+    pivoted_df = df.pivot(
+        values=value_cols, index="_pivot_index", on="sanitized_group"
+    )
+
+    # Rename new columns with the specified prefix to ensure uniqueness.
+    # The new name format will be: {prefix}_{original_value_col}_{group_value}
+    # e.g., "DribbleShooting_FGM_0_Dribbles"
+    pivoted_df = pivoted_df.rename(
+        {col: f"{prefix}{col}" for col in pivoted_df.columns if col != "_pivot_index"}
+    )
+
+    return pivoted_df.drop("_pivot_index")
+
+
 # ----------------------------
 # Core Logic
 # ----------------------------
@@ -335,46 +405,6 @@ def fetch_data_for_season(season: str) -> Dict[str, pl.DataFrame]:
     return season_data
 
 
-def aggregate_traded_players(df: pl.DataFrame) -> pl.DataFrame:
-    """
-    Aggregates stats for players who were traded mid-season.
-
-    This function handles the 'TOT' (Total) team abbreviation, which represents
-    a player's combined stats for the season across all teams they played for.
-    When a player is traded, the API provides separate rows for each team stint
-    plus a summary 'TOT' row.
-
-    The strategy is to:
-    1. Identify players with a 'TOT' row, indicating they were traded.
-    2. For these players, keep only the 'TOT' row as it contains the correct
-       season averages and totals.
-    3. For players who were not traded (played for a single team), their single
-       row is kept as is.
-
-    This ensures that each player is represented by a single, accurate row of
-    statistics for the season, preventing double-counting and correctly
-    reflecting their overall performance.
-    """
-    if "TEAM_ABBREVIATION" not in df.columns:
-        logging.warning("'TEAM_ABBREVIATION' column not found. Skipping trade aggregation.")
-        return df
-
-    # Find players who have a 'TOT' entry, meaning they were traded
-    traded_player_ids = df.filter(pl.col("TEAM_ABBREVIATION") == "TOT")[
-        "PLAYER_ID"
-    ].unique().to_list()
-
-    # Separate traded players from non-traded players
-    traded_df = df.filter(pl.col("PLAYER_ID").is_in(traded_player_ids))
-    nontraded_df = df.filter(~pl.col("PLAYER_ID").is_in(traded_player_ids))
-
-    # For traded players, only keep their total ('TOT') stats for the season
-    aggregated_traded_df = traded_df.filter(pl.col("TEAM_ABBREVIATION") == "TOT")
-
-    # Combine the non-traded players with the aggregated stats of traded players
-    return pl.concat([nontraded_df, aggregated_traded_df])
-
-
 def join_dataframes(
     dataframes: Dict[str, pl.DataFrame], season: str
 ) -> Optional[pl.DataFrame]:
@@ -385,14 +415,12 @@ def join_dataframes(
         logging.warning(f"No dataframes to join for season {season}.")
         return None
 
-    # Use 'bio_stats' as the base, as it contains fundamental player info.
-    base_df_name = "bio_stats"
+    # Use 'base_stats' as the base, as it contains fundamental player info.
+    base_df_name = "base_stats"
     if base_df_name not in dataframes:
         logging.error(f"'{base_df_name}' not found for season {season}, cannot join.")
         return None
-
-    # Handle traded players in the base table first.
-    base_df = aggregate_traded_players(dataframes[base_df_name])
+    base_df = dataframes[base_df_name]
     join_keys = ["PLAYER_ID", "SEASON_YEAR"]
 
     # Iteratively join the rest of the dataframes.
@@ -402,17 +430,9 @@ def join_dataframes(
 
         processed_df = df.clone()
 
-        # Standardize column names before processing
-        if "TEAM_ABBREVIATION" not in processed_df.columns and "PLAYER_LAST_TEAM_ABBREVIATION" in processed_df.columns:
-            logging.info(f"Renaming 'PLAYER_LAST_TEAM_ABBREVIATION' to 'TEAM_ABBREVIATION' for '{name}' table.")
-            processed_df = processed_df.rename({"PLAYER_LAST_TEAM_ABBREVIATION": "TEAM_ABBREVIATION"})
-        
         if "PLAYER_ID" not in processed_df.columns and "CLOSE_DEF_PERSON_ID" in processed_df.columns:
             logging.info(f"Renaming 'CLOSE_DEF_PERSON_ID' to 'PLAYER_ID' for '{name}' table.")
             processed_df = processed_df.rename({"CLOSE_DEF_PERSON_ID": "PLAYER_ID"})
-
-        # Aggregate stats for traded players in the right-side table before joining.
-        processed_df = aggregate_traded_players(processed_df)
 
         # Identify and warn about duplicate columns before the join.
         base_cols = set(base_df.columns)
@@ -450,6 +470,107 @@ def join_dataframes(
     return base_df
 
 
+def fetch_and_join_player_specific_data(
+    master_season_df: pl.DataFrame, season: str
+) -> pl.DataFrame:
+    """
+    Fetches and joins player-specific data for eligible players.
+
+    This function identifies players who meet minimum game and minute thresholds,
+    fetches detailed data for them from player-specific endpoints, and joins
+    this new data into the master DataFrame for the season. It is robust to
+    endpoints requiring specific parameters like 'team_id' and to variations
+    in the returned data columns for different players.
+
+    Args:
+        master_season_df: The DataFrame containing joined league-wide data.
+        season: The season string (e.g., '2023-24').
+
+    Returns:
+        A DataFrame containing data for eligible players, now including the
+        detailed player-specific stats.
+    """
+    logging.info("=> Identifying eligible players for detailed stats...")
+
+    # Filter for players who meet the minimum participation criteria.
+    eligible_df = master_season_df.filter(
+        (pl.col("GP") >= MIN_GAMES_PLAYED) & (pl.col("MIN") >= MIN_MPG)
+    )
+    # eligible_player_ids = eligible_df["PLAYER_ID"].to_list()
+    eligible_player_ids = [201935, 201952, 202695] # temp placeholder
+
+    if not eligible_player_ids:
+        logging.warning(f"No eligible players found for season {season}. Skipping detailed stats.")
+        return eligible_df  # Return the empty (but correctly schema'd) DataFrame
+
+    logging.info(f"Found {len(eligible_player_ids)} eligible players. Fetching detailed data...")
+
+    # Create a mapping from player_id to team_id.
+    player_team_df = master_season_df.filter(
+        pl.col("PLAYER_ID").is_in(eligible_player_ids)
+    ).select(["PLAYER_ID", "TEAM_ID"])
+    player_id_to_team_id = dict(zip(player_team_df["PLAYER_ID"], player_team_df["TEAM_ID"]))
+
+
+    all_players_detailed_stats = []
+    for player_id in eligible_player_ids:
+        logging.debug(f"Fetching detailed stats for Player ID: {player_id}")
+        # Start with a base DataFrame for the player to join all pivoted results onto.
+        player_dfs_to_join = [
+            pl.DataFrame({"PLAYER_ID": [player_id], "SEASON_YEAR": [season]})
+        ]
+
+        for endpoint_name, endpoint_def in PLAYER_SPECIFIC_ENDPOINTS.items():
+            params = endpoint_def["params"].copy()
+            params["season"] = season
+            params["player_id"] = player_id
+
+            # The PlayerDashPtShots endpoint specifically requires a team_id.
+            if endpoint_def["cls"] == playerdashptshots.PlayerDashPtShots:
+                team_id = player_id_to_team_id.get(player_id)
+                if team_id is None:
+                    logging.warning(
+                        f"No TEAM_ID found for player {player_id}. "
+                        f"Skipping '{endpoint_name}' for season {season}."
+                    )
+                    continue
+                params["team_id"] = team_id
+
+            response = fetch(endpoint_def["cls"], params)
+
+            if response:
+                for rs_name in endpoint_def["result_sets"]:
+                    rs_df = extract_dataframe_from_response(response, rs_name)
+                    # Pivot the long-form data into a single wide row.
+                    pivoted_df = _pivot_and_widen_player_stats(
+                        # rs_df, f"{endpoint_name}_{rs_name}_"
+                        rs_df, f""
+                    )
+                    if pivoted_df is not None:
+                        player_dfs_to_join.append(pivoted_df)
+
+        # Horizontally concatenate all pivoted DataFrames for the current player.
+        if len(player_dfs_to_join) > 1:
+            all_players_detailed_stats.append(pl.concat(player_dfs_to_join, how="horizontal"))
+
+    if not all_players_detailed_stats:
+        logging.warning(f"Failed to fetch any player-specific data for season {season}.")
+        return eligible_df
+
+    # Combine all individual player DataFrames into one large DataFrame.
+    # Use `how="diagonal"` to handle cases where players have different sets of stats,
+    # which results in different columns. Polars will fill missing values with nulls.
+    player_specific_df = pl.concat(all_players_detailed_stats, how="diagonal")
+
+    # Join the detailed player stats back to the filtered master DataFrame.
+    final_df = eligible_df.join(
+        player_specific_df, on=["PLAYER_ID", "SEASON_YEAR"], how="left"
+    )
+    logging.info(f"Successfully joined detailed stats for {final_df.height} players.")
+
+    return final_df
+
+
 def run_pipeline():
     """
     Main function to execute the full data ingestion and processing pipeline.
@@ -463,17 +584,29 @@ def run_pipeline():
     all_season_master_dfs = []
 
     for season in seasons:
-        # 1. Fetch all raw data for the season
+        # 1. Fetch all raw league-wide data for the season
         season_dataframes = fetch_data_for_season(season)
 
-        # 2. Join all dataframes for the season
-        if season_dataframes:
-            master_season_df = join_dataframes(season_dataframes, season)
-            if master_season_df is not None:
-                all_season_master_dfs.append(master_season_df)
-                logging.info(f"Successfully joined data for season {season}.")
+        if not season_dataframes:
+            logging.warning(f"No league-wide data found for season {season}. Skipping.")
+            continue
+        
+        # 2. Join all league-wide dataframes for the season
+        master_season_df = join_dataframes(season_dataframes, season)
+        
+        if master_season_df is None:
+            logging.error(f"Failed to join league-wide data for season {season}. Skipping.")
+            continue
+            
+        # 3. Fetch and join player-specific data for eligible players
+        # This returns a DataFrame containing only eligible players with all stats joined.
+        final_season_df = fetch_and_join_player_specific_data(master_season_df, season)
 
-    # 3. Combine all seasons and save to a single file
+        if final_season_df is not None and not final_season_df.is_empty():
+            all_season_master_dfs.append(final_season_df)
+            logging.info(f"Successfully processed data for season {season}.")
+
+    # 4. Combine all seasons and save to a single file
     if all_season_master_dfs:
         final_master_df = pl.concat(all_season_master_dfs)
         output_path = PROCESSED_DIR / "master_player_analytics.parquet"
@@ -484,6 +617,7 @@ def run_pipeline():
         logging.info(f"Final table shape: {final_master_df.shape}")
     else:
         logging.warning("--- Pipeline finished, but no data was processed or saved. ---")
+
 
 if __name__ == "__main__":
     run_pipeline()
