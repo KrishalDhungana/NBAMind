@@ -320,9 +320,63 @@ def extract_dataframe_from_response(
         return None
 
 
-def _pivot_and_widen_player_stats(
-    df: pl.DataFrame, prefix: str
-) -> Optional[pl.DataFrame]:
+def get_suffix_for_params(params: Dict[str, Any]) -> str:
+    """
+    Determines the appropriate column suffix based on the API parameters.
+    """
+    # Check various keys used by NBA API for mode settings
+    mode = (
+        params.get("per_mode_detailed")
+        or params.get("per_mode_simple")
+        or params.get("per_mode_time")
+        or params.get("PerMode")
+    )
+    if mode:
+        return f"_{mode}"
+    return ""
+
+
+def apply_unit_suffixes(df: pl.DataFrame, params: Dict[str, Any]) -> pl.DataFrame:
+    """
+    Renames columns to include unit suffixes (e.g., _PerGame, _Per100Possessions)
+    based on the fetch parameters.
+    """
+    suffix = get_suffix_for_params(params)
+    if not suffix:
+        return df
+
+    # Columns that should never be suffixed
+    exact_exclusions = {
+        # Identifiers & Metadata
+        "PLAYER_ID", "PLAYER_NAME", "NICKNAME", "TEAM_ID", "TEAM_ABBREVIATION",
+        "AGE", "GP", "G", "W", "L", "W_PCT", "SEASON_YEAR", "LEAGUE_ID",
+        "TEAM_CITY", "TEAM_NAME", "TEAM_CODE", "TEAM_SLUG", "TEAM_COUNT",
+        "PLAYER_HEIGHT", "PLAYER_HEIGHT_INCHES", "PLAYER_WEIGHT",
+        "COLLEGE", "COUNTRY", "DRAFT_YEAR", "DRAFT_ROUND", "DRAFT_NUMBER",
+        "ROSTERSTATUS", "FROM_YEAR", "TO_YEAR", "PLAYERCODE", "PLAYER_SLUG",
+        "GAMES_PLAYED_FLAG", "OTHERLEAGUE_EXPERIENCE_CH",
+        "GROUP_SET", "GROUP_VALUE", 
+        "CLOSE_DEF_PERSON_ID", "PLAYER_LAST_TEAM_ID", "PLAYER_LAST_TEAM_ABBREVIATION",
+        "PLAYER_POSITION", "FREQ", "MIN", 
+        "AST_TO", "PIE"  # Specific ratios/ratings
+    }
+
+    # Substring Matches for dimensionless Metrics: if a column name contains ANY of these, it remains unsuffixed.
+    rate_indicators = [
+        "PCT", "RATE", "RATIO", "RATING", "RANK", 
+        "PACE", "AVG", "PER"
+    ]
+
+    new_columns = {}
+    for col in df.columns:
+        if (col in exact_exclusions) or any(x in col for x in rate_indicators):
+            continue
+        new_columns[col] = f"{col}{suffix}"
+
+    return df.rename(new_columns)
+
+
+def _pivot_and_widen_player_stats(df: pl.DataFrame) -> Optional[pl.DataFrame]:
     """
     Pivots a long DataFrame from the NBA API into a wide, one-row DataFrame.
     This is used for player-specific endpoints that return data in a long format,
@@ -330,8 +384,6 @@ def _pivot_and_widen_player_stats(
 
     Args:
         df: The long-format DataFrame, must contain 'GROUP_VALUE'.
-        prefix: A string to prepend to the new pivoted column names to avoid
-                collisions between different data types (e.g., 'DribbleShooting').
 
     Returns:
         A wide, one-row DataFrame or None if the input is invalid.
@@ -369,13 +421,6 @@ def _pivot_and_widen_player_stats(
         values=value_cols, index="_pivot_index", on="sanitized_group"
     )
 
-    # Rename new columns with the specified prefix to ensure uniqueness.
-    # The new name format will be: {prefix}_{original_value_col}_{group_value}
-    # e.g., "DribbleShooting_FGM_0_Dribbles"
-    pivoted_df = pivoted_df.rename(
-        {col: f"{prefix}{col}" for col in pivoted_df.columns if col != "_pivot_index"}
-    )
-
     return pivoted_df.drop("_pivot_index")
 
 
@@ -400,6 +445,7 @@ def fetch_data_for_season(season: str) -> Dict[str, pl.DataFrame]:
         if response:
             df = extract_dataframe_from_response(response, endpoint_def["result_set"])
             if df is not None and not df.is_empty():
+                df = apply_unit_suffixes(df, params)
                 season_data[name] = df.with_columns(pl.lit(season).alias("SEASON_YEAR"))
 
     return season_data
@@ -541,10 +587,12 @@ def fetch_and_join_player_specific_data(
             if response:
                 for rs_name in endpoint_def["result_sets"]:
                     rs_df = extract_dataframe_from_response(response, rs_name)
+                    if rs_df is not None and not rs_df.is_empty():
+                        rs_df = apply_unit_suffixes(rs_df, params)
                     # Pivot the long-form data into a single wide row.
                     pivoted_df = _pivot_and_widen_player_stats(
                         # rs_df, f"{endpoint_name}_{rs_name}_"
-                        rs_df, f""
+                        rs_df
                     )
                     if pivoted_df is not None:
                         player_dfs_to_join.append(pivoted_df)

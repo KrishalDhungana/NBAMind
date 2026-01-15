@@ -1,242 +1,499 @@
-import polars as pl
+"""
+==========================================================================================
+NBAMind: engineering.py
+------------------------------------------------------------------------------------------
+This script consumes the master player analytics table and produces two outputs:
+1. features_similarity.parquet: High-signal, normalized features for the similarity engine.
+2. features_profile.parquet: Rich, descriptive features for player profile UI (Base, Advanced, Playstyle).
+
+It handles unit conversions (PerGame <-> Per100), season-level normalizations (Z-scores),
+and complex feature derivation (Offensive Load, Box Creation, etc.) in a single pass.
+==========================================================================================
+"""
+
+import logging
+import sys
 from pathlib import Path
-from nbamind.data.processing import extract_dataframe_from_response
+import numpy as np
+import polars as pl
 
-# ---- config ----
-parquet_path = Path("data/processed/master_player_analytics.parquet")  # <- change this
-csv_out_path = parquet_path.with_suffix(".csv")      # e.g., final.csv
+# ----------------------------
+# Configuration
+# ----------------------------
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
-# ---- read parquet -> Polars DataFrame ----
-df = pl.read_parquet(parquet_path)
+DATA_DIR = Path("data/processed")
+INPUT_FILE = DATA_DIR / "master_player_analytics.parquet"
+OUTPUT_SIMILARITY = DATA_DIR / "features_similarity.parquet"
+OUTPUT_PROFILE = DATA_DIR / "features_profile.parquet"
 
-# ---- inspect ----
-print("\n== HEAD ==")
-print(df.head(10))  # change row count if you want
+# Columns strictly required from the master file
+# Expanded to include raw stats for the profile view
+REQUIRED_COLUMNS = [
+    # Identifiers
+    "PLAYER_ID", "PLAYER_NAME", "SEASON_YEAR", "TEAM_ID", "TEAM_ABBREVIATION", "GP", "PLAYER_POSITION",
+    # Base Stats (Per Game / Rates)
+    "PTS_PerGame", "AST_PerGame", "REB_PerGame", "STL_PerGame", "BLK_PerGame",
+    "MIN1_PerGame", "PACE", "FG_PCT", "FG3_PCT", "FT_PCT", "PLUS_MINUS_Per100Possessions",
+    # Per 100
+    "PTS_Per100Possessions", "AST_Per100Possessions", "FGA_Per100Possessions", "FTA_Per100Possessions",
+    "TOV_Per100Possessions", "FG3A_Per100Possessions", "FG3M_Per100Possessions", "OREB_Per100Possessions", "DREB_Per100Possessions",
+    "STL_Per100Possessions", "BLK_Per100Possessions", "PF_Per100Possessions",
+    # Advanced / Rates
+    "TS_PCT", "USG_PCT", "AST_PCT", "OFF_RATING", "DEF_RATING", "NET_RATING", "PIE", "POTENTIAL_AST_PerGame",
+    "OREB_PCT", "DREB_PCT", "PCT_BLK", "PCT_STL", "PCT_PLUSMINUS",
+    # Shooting Zones (Volumes & Efficiency)
+    "FGA_Per100Possessions_Restricted_Area", "FG_PCT_Restricted_Area", "FGM_Per100Possessions_Restricted_Area",
+    "FGA_Per100Possessions_In_The_Paint_(Non_RA)", "FG_PCT_In_The_Paint_(Non_RA)",
+    "FGA_Per100Possessions_Mid_Range", "FG_PCT_Mid_Range", "FGM_Per100Possessions_Mid_Range",
+    "FGA_Per100Possessions_Left_Corner_3", "FG_PCT_Left_Corner_3",
+    "FGA_Per100Possessions_Right_Corner_3", "FG_PCT_Right_Corner_3",
+    "FGA_Per100Possessions_Above_the_Break_3", "FG_PCT_Above_the_Break_3",
+    # Playtypes / Tracking (Per Game & PCT)
+    "PULL_UP_FGA_PerGame", "PULL_UP_FG_PCT",
+    "CATCH_SHOOT_FGA_PerGame", "CATCH_SHOOT_FG_PCT",
+    "DRIVES_PerGame", "DRIVE_FG_PCT", "DRIVE_PASSES_PCT",
+    "PAINT_TOUCH_FGA_PerGame", "POST_TOUCH_FGA_PerGame", "ELBOW_TOUCH_FGA_PerGame",
+    "TOUCHES_PerGame", "ELBOW_TOUCHES_PerGame", "POST_TOUCHES_PerGame", "PAINT_TOUCHES_PerGame",
+    # Defense Tracking
+    "DEF_RIM_FGA_PerGame", "DEF_RIM_FG_PCT",
+    # Hustle / Physical
+    "DEFLECTIONS_PerGame", "CHARGES_DRAWN_PerGame", "SCREEN_ASSISTS_PerGame",
+    "LOOSE_BALLS_RECOVERED_PerGame", "BOX_OUTS_PerGame", "CONTESTED_SHOTS_PerGame",
+    "DIST_MILES_OFF_PerGame", "DIST_MILES_DEF_PerGame",
+    "AVG_SPEED", "AVG_SPEED_OFF", "AVG_SPEED_DEF",
+    "PLAYER_HEIGHT_INCHES", "PLAYER_WEIGHT", "AGE",
+    # Assisted/Unassisted (Optional but good for profile)
+    "PCT_UAST_2PM_Restricted_Area", "PCT_UAST_3PM_Above_the_Break_3",
+    # Granular Shot Types (Style)
+    "FGA_Per100Possessions_Alley_Oop", "FG_PCT_Alley_Oop",
+    "FGA_Per100Possessions_Bank_Shot", "FG_PCT_Bank_Shot",
+    "FGA_Per100Possessions_Dunk", "FG_PCT_Dunk",
+    "FGA_Per100Possessions_Fadeaway", "FG_PCT_Fadeaway",
+    "FGA_Per100Possessions_Finger_Roll", "FG_PCT_Finger_Roll",
+    "FGA_Per100Possessions_Hook_Shot", "FG_PCT_Hook_Shot",
+    "FGA_Per100Possessions_Jump_Shot", "FG_PCT_Jump_Shot",
+    "FGA_Per100Possessions_Layup", "FG_PCT_Layup",
+    "FGA_Per100Possessions_Tip_Shot", "FG_PCT_Tip_Shot"
+]
 
-print("\n== COLUMNS ==")
-print(df.columns)
+# ----------------------------
+# Module-Level Helper Functions (Reusable Expressions)
+# ----------------------------
 
-print("\n== SHAPE ==")
-print(df.shape)
+def calculate_zscore(col_name: str, group_col: str = "SEASON_YEAR") -> pl.Expr:
+    """Calculates Z-Score for a column grouped by season."""
+    return (
+        (pl.col(col_name) - pl.col(col_name).mean().over(group_col)) / 
+        (pl.col(col_name).std().over(group_col) + 1e-6)
+    )
 
-# ---- save as CSV ----
-df.write_csv(csv_out_path)
-print(f"\nSaved CSV to: {csv_out_path.resolve()}")
+def convert_per_game_to_per_100(col_name: str, poss_col: str = "poss_PerGame") -> pl.Expr:
+    """Converts a PerGame stat to Per100Possessions."""
+    return (
+        pl.when(pl.col(poss_col) > 0)
+        .then(pl.col(col_name) * 100.0 / pl.col(poss_col))
+        .otherwise(None)
+    )
 
-"""
-- eliminate all features with _RANK in name.
+def get_league_ratio_sum_expr(numerator_col: str, denominator_col: str) -> pl.Expr:
+    """Returns an expression for league-wide efficiency (Sum(A)/Sum(B)) per season."""
+    return (
+        pl.col(numerator_col).sum().over("SEASON_YEAR") / 
+        (pl.col(denominator_col).sum().over("SEASON_YEAR") + 1e-6)
+    )
 
-USAGE
-- offensive load: $$(Ast - (0.38 \times BoxCr)) \times 0.75 + FGA + FTA \times 0.44 + BoxCr + TOV$$
-- true usage: $$(FGA + 0.44 \times FTA + TOV + PotentialAst) / TeamPoss$$
-- heliocentricity index: $$(USG\% \times 0.5) + (AST\% \times 0.5)$$
-- ball dominance: $$TimeOfPossession / Minutes$$
-    - since TimeOfPossession in our data is per-game, we should use minutes per-game
+def load_data(file_path: Path) -> pl.DataFrame:
+    """Loads the master dataset and validates required columns."""
+    if not file_path.exists():
+        raise FileNotFoundError(f"Could not find input file at {file_path}")
+    logging.info(f"Loading data from: {file_path}")
+    df = pl.read_parquet(file_path)
+    # Column existence check (Non-blocking warning for optional profile fields, blocking for core)
+    missing = [col for col in REQUIRED_COLUMNS if col not in df.columns]
+    if missing:
+        # We strict fail if any column is missing to ensure data integrity
+        raise ValueError(f"Missing required columns in master dataset: {missing}")
+    return df
 
-CREATION
-- box creation: Ast*0.1843 + (Pts+TOV)*0.0969 - 2.3021*(3pt proficiency) + 0.0582*(Ast*(Pts+TOV)*3pt proficiency) - 1.1942
-- passing aggression: $$Assists / PotentialAssists$$
-- self-created 3 freq: $$Unassisted3PM / 3PM_{Total}$$
+# ----------------------------
+# Main Pipeline Function
+# ----------------------------
 
-VOLUME
-- scoring volume: PTSPer100Poss (z-scored)
-    - for z scores, to avoid distortion from low minute players and garbage time players, we only consider rotation players with at least 500 min played (however, we need to address this definition for current, in-progress season)
-- total reb %: TRB%
+def feature_engineering_pipeline(df: pl.DataFrame) -> None:
+    """
+    Computes all engineered features sequentially in a single function.
     
-STYLE
-- assist-to-load ratio: $$AST / OffensiveLoad$$
-- 3p attempt rate (3PAr): $$3PA / FGA$$
-- NEW rim pressure: PCT_PTS_PAINT + FTA_RATE
-      floater/midrange: PCT_PTS_MID_RANGE
-      perimeter reliance: PCT_PTS_3PT
-      remember to make features like PCT_PTS_3PT z-scored
+    1. Unit Handling
+    2. Offensive Archetypes (Proficiency, Load, Box Creation)
+    3. Season Context (Heliocentricity, Gravity)
+    4. Playmaking & Efficiency
+    5. Shot Diet & Tendencies
+    6. Defense & Rebounding
+    7. Hustle & Movement
+    8. Relative Efficiency
+    9. Final Selection & Saving
+    """
+    logging.info(f"Starting pipeline with shape: {df.shape}")
+
+    # =========================================================================
+    # 1. Unit Handling & Estimations
+    # =========================================================================
+    # Estimate Possessions Per Game: PACE * MIN / 48
+    df = df.with_columns([
+        (pl.col("PACE") * pl.col("MIN1_PerGame") / 48.0).alias("poss_PerGame")
+    ])
+
+    # Calculate TOV_PerGame (missing in raw, needed for profile)
+    df = df.with_columns([
+        (pl.col("TOV_Per100Possessions") * pl.col("poss_PerGame") / 100.0).alias("TOV_PerGame")
+    ])
+
+    # =========================================================================
+    # 2. Advanced Offensive Archetyping (Ben Taylor / Backpicks inspired)
+    # =========================================================================
+    logging.info("Computing advanced offensive metrics (Proficiency, Load, Box Creation)...")
+    
+    # 3PT Proficiency: Logistic curve weighting of volume * accuracy
+    # Formula: (2/(1 + exp(-FG3A_p100)) - 1) * FG3_PCT
+    three_pt_prof_expr = ((2.0 / (1.0 + (-pl.col("FG3A_Per100Possessions")).exp()) - 1.0) * pl.col("FG3_PCT")).alias("three_pt_proficiency")
+    df = df.with_columns(three_pt_prof_expr)
+
+    # Box Creation (approximate open shots created for teammates + self)
+    # Formula: AST*0.1843 + (PTS+TOV)*0.0969 - 2.3021*3pt_prof + 0.0582*(AST*(PTS+TOV)*3pt_prof) - 1.1942
+    box_creation_expr = (
+        (pl.col("AST_Per100Possessions") * 0.1843) +
+        ((pl.col("PTS_Per100Possessions") + pl.col("TOV_Per100Possessions")) * 0.0969) -
+        (pl.col("three_pt_proficiency") * 2.3021) +
+        ((pl.col("AST_Per100Possessions") * (pl.col("PTS_Per100Possessions") + pl.col("TOV_Per100Possessions")) * pl.col("three_pt_proficiency")) * 0.0582) - 
+        1.1942
+    ).alias("box_creation")
+    df = df.with_columns(box_creation_expr)
+
+    # Offensive Load (percentage of possessions a player is directly involved in)
+    # Formula: (AST - (0.38 * box_creation))**0.75 + FGA + (FTA*0.44) + box_creation + TOV
+    off_load_expr = (
+        (pl.col("AST_Per100Possessions") - (0.38 * pl.col("box_creation"))).pow(0.75) +
+        pl.col("FGA_Per100Possessions") +
+        (pl.col("FTA_Per100Possessions") * 0.44) +
+        pl.col("box_creation") +
+        pl.col("TOV_Per100Possessions")
+    ).alias("offensive_load")
+    df = df.with_columns(off_load_expr)
+
+    # =========================================================================
+    # 3. Season-Level Context & Normalization
+    # =========================================================================
+    logging.info("Computing season averages and Z-scores...")
+    
+    # We calculate Z-scores temporarily for aggregation
+    time_poss_rate = (pl.col("TIME_OF_POSS_PerGame") / pl.col("MIN1_PerGame")) # (total minutes player possesses ball) / (player minutes per game)
+    df = df.with_columns([
+        calculate_zscore("USG_PCT").alias("z_usg"),
+        calculate_zscore("AST_PCT").alias("z_ast_pct"),
+        ( (time_poss_rate - time_poss_rate.mean().over("SEASON_YEAR")) / 
+          (time_poss_rate.std().over("SEASON_YEAR") + 1e-6) ).alias("z_time_poss")
+    ])
+
+    # Heliocentricity: Mean of Z(USG), Z(AST%), Z(TimeOfPoss/Min)
+    df = df.with_columns([
+        ((pl.col("z_usg") + pl.col("z_ast_pct") + pl.col("z_time_poss")) / 3.0).alias("heliocentricity")
+    ])
+
+    # TS% Relative
+    df = df.with_columns([
+        (pl.col("TS_PCT") - pl.col("TS_PCT").mean().over("SEASON_YEAR")).alias("ts_pct_rel")
+    ])
+
+    # Scoring Gravity: Volume * Efficiency relative
+    df = df.with_columns([
+        (pl.col("PTS_Per100Possessions") * pl.col("ts_pct_rel")).alias("scoring_gravity")
+    ])
+
+    # =========================================================================
+    # 4. Passing & Playmaking Efficiency
+    # =========================================================================
+    # Passing Efficiency: AST (pg) / Potential AST (pg)
+    # Convert AST p100 back to PG to match POTENTIAL_AST units
+    ast_pg = (pl.col("AST_Per100Possessions") * (pl.col("poss_PerGame") / 100.0))
+    df = df.with_columns([
+        (ast_pg / (pl.col("POTENTIAL_AST_PerGame") + 1e-6)).alias("passing_efficiency"),
+        (pl.col("AST_Per100Possessions") / (pl.col("offensive_load") + 1e-6)).alias("assist_to_load"),
+        (pl.col("TOV_Per100Possessions") / (pl.col("offensive_load") + 1e-6)).alias("tov_economy")
+    ])
+
+    # =========================================================================
+    # 5. Shot Diet & Tendencies
+    # =========================================================================
+    logging.info("Computing shot diet frequencies...")
+    
+    # Denominator: FGA Per 100
+    fga_total = pl.col("FGA_Per100Possessions") + 1e-6
+
+    # Granular Style Metrics (Tendency & Efficiency)
+    # Isolating Style from Volume by using Frequencies (FGA_Type / Total_FGA)
+    df = df.with_columns([
+        (pl.col("FGA_Per100Possessions_Alley_Oop") / fga_total).alias("freq_alley_oop"),
+        pl.col("FG_PCT_Alley_Oop").alias("eff_alley_oop"),
+        (pl.col("FGA_Per100Possessions_Bank_Shot") / fga_total).alias("freq_bank_shot"),
+        pl.col("FG_PCT_Bank_Shot").alias("eff_bank_shot"),
+        (pl.col("FGA_Per100Possessions_Dunk") / fga_total).alias("freq_dunk"),
+        pl.col("FG_PCT_Dunk").alias("eff_dunk"),
+        (pl.col("FGA_Per100Possessions_Fadeaway") / fga_total).alias("freq_fadeaway"),
+        pl.col("FG_PCT_Fadeaway").alias("eff_fadeaway"),
+        (pl.col("FGA_Per100Possessions_Finger_Roll") / fga_total).alias("freq_finger_roll"),
+        pl.col("FG_PCT_Finger_Roll").alias("eff_finger_roll"),
+        (pl.col("FGA_Per100Possessions_Hook_Shot") / fga_total).alias("freq_hook_shot"),
+        pl.col("FG_PCT_Hook_Shot").alias("eff_hook_shot"),
+        (pl.col("FGA_Per100Possessions_Jump_Shot") / fga_total).alias("freq_jump_shot"),
+        pl.col("FG_PCT_Jump_Shot").alias("eff_jump_shot"),
+        (pl.col("FGA_Per100Possessions_Layup") / fga_total).alias("freq_layup"),
+        pl.col("FG_PCT_Layup").alias("eff_layup"),
+        (pl.col("FGA_Per100Possessions_Tip_Shot") / fga_total).alias("freq_tip_shot"),
+        pl.col("FG_PCT_Tip_Shot").alias("eff_tip_shot"),
+    ])
+
+    # Zone Frequencies (Already Per100 inputs)
+    # NOTE: THESE FIELDS DON'T ACTUALLY LOOK RIGHT!!!!! e.g., FGA_Per100Possessions_Restricted_Area for 2019-2020 James Harden is 428. We need to fix this.
+    df = df.with_columns([
+        (pl.col("FGA_Per100Possessions_Restricted_Area") / fga_total).alias("fga_rim_freq"),
+        (pl.col("FGA_Per100Possessions_In_The_Paint_(Non_RA)") / fga_total).alias("fga_floater_freq"),
+        (pl.col("FGA_Per100Possessions_Mid_Range") / fga_total).alias("fga_mid_freq"),
+        ((pl.col("FGA_Per100Possessions_Left_Corner_3") + pl.col("FGA_Per100Possessions_Right_Corner_3")) / fga_total).alias("fga_corner_freq"),
+        (pl.col("FGA_Per100Possessions_Above_the_Break_3") / fga_total).alias("fga_ab3_freq"),
+    ])
+
+    # Playtype Frequencies (PerGame -> Per100 -> Ratio); NOTE: the sum of these DO NOT add up to fga_total (e.g., Aaron Gordon 2019-2020 averages 12.37 fga/game, but the sum of these fga's/game is 13.8)
+    df = df.with_columns([
+        (convert_per_game_to_per_100("PULL_UP_FGA_PerGame") / fga_total).alias("pullup_fga_freq"),
+        (convert_per_game_to_per_100("DRIVE_FGA_PerGame") / fga_total).alias("drive_fga_freq"),
+        (convert_per_game_to_per_100("CATCH_SHOOT_FGA_PerGame") / fga_total).alias("catch_shoot_fga_freq"),
+        (convert_per_game_to_per_100("PAINT_TOUCH_FGA_PerGame") / fga_total).alias("paint_touch_fga_freq"),
+        (convert_per_game_to_per_100("POST_TOUCH_FGA_PerGame") / fga_total).alias("post_touch_fga_freq"),
+        (convert_per_game_to_per_100("ELBOW_TOUCH_FGA_PerGame") / fga_total).alias("elbow_touch_fga_freq"),
+        
+        # Drive Rate (Drives per 100 poss)
+        convert_per_game_to_per_100("DRIVES_PerGame").alias("drive_rate"),
+        
+        # FT Rate
+        (pl.col("FTA_Per100Possessions") / fga_total).alias("ft_rate")
+    ])
+
+    # Touch Frequencies (Ratios of PerGame counts)
+    total_touches = pl.col("TOUCHES_PerGame") + 1e-6
+    df = df.with_columns([
+        (pl.col("ELBOW_TOUCHES_PerGame") / total_touches).alias("elbow_touch_freq"),
+        (pl.col("POST_TOUCHES_PerGame") / total_touches).alias("post_touch_freq"),
+        (pl.col("PAINT_TOUCHES_PerGame") / total_touches).alias("paint_touch_freq"),
+    ])
+
+    # =========================================================================
+    # 6. Defense & Rebounding
+    # =========================================================================
+    logging.info("Computing defense and rebounding metrics...")
+
+    # Stocks (Steals + Blocks per 100)
+    df = df.with_columns([
+        (pl.col("STL_Per100Possessions") + pl.col("BLK_Per100Possessions")).alias("stocks")
+    ])
+
+    # Defensive Versatility: 1 / (1 + abs(Z(BLK) - Z(STL)))
+    df = df.with_columns([
+        calculate_zscore("BLK_Per100Possessions").alias("z_blk"),
+        calculate_zscore("STL_Per100Possessions").alias("z_stl"),
+    ])
+    df = df.with_columns([
+        (1.0 / (1.0 + (pl.col("z_blk") - pl.col("z_stl")).abs())).alias("def_versatility")
+    ])
+
+    # Rim Deterrence: Player Rim FG% - League Rim FG%
+    # League stat calculation: Sum(FGM_Rim) / Sum(FGA_Rim)
+    league_rim_pct = get_league_ratio_sum_expr(
+        "FGM_Per100Possessions_Restricted_Area", 
+        "FGA_Per100Possessions_Restricted_Area"
+    )
+
+    df = df.with_columns([
+        (pl.col("DEF_RIM_FG_PCT") - league_rim_pct).alias("rim_deterrence"),
+        # Rim Contest Rate: Contests / Minute
+        (pl.col("DEF_RIM_FGA_PerGame") / (pl.col("MIN1_PerGame") + 1e-6)).alias("rim_contests_per_min")
+    ])
+
+    # =========================================================================
+    # 7. Hustle & Movement
+    # =========================================================================
+    # Hustle stats: PerGame -> Per100
+    hustle_cols = [
+        "CONTESTED_SHOTS_PerGame", "DEFLECTIONS_PerGame", "CHARGES_DRAWN_PerGame",
+        "SCREEN_ASSISTS_PerGame", "LOOSE_BALLS_RECOVERED_PerGame", "BOX_OUTS_PerGame"
+    ]
+    hustle_exprs = [convert_per_game_to_per_100(col).alias(col.replace("_PerGame", "_Per100Possessions")) for col in hustle_cols]
+    df = df.with_columns(hustle_exprs)
+
+    # Movement: Miles per minute
+    df = df.with_columns([
+        (pl.col("DIST_MILES_DEF_PerGame") / (pl.col("MIN1_PerGame") + 1e-6)).alias("def_miles_per_min"),
+        (pl.col("DIST_MILES_OFF_PerGame") / (pl.col("MIN1_PerGame") + 1e-6)).alias("off_miles_per_min"),
+        
+        # Physical Z-Scores
+        calculate_zscore("PLAYER_HEIGHT_INCHES").alias("z_height"),
+        calculate_zscore("PLAYER_WEIGHT").alias("z_weight"),
+        calculate_zscore("AGE").alias("z_age")
+    ])
+
+    # =========================================================================
+    # 8. Relative Efficiency by Zone
+    # =========================================================================
+    # Relative Efficiency: Player FG% - League FG% (Ratio of Sums)
+    # NOTE: columns like FGM_Per100Possessions_Restricted_Area aren't represented as Per100Possessions, but rather seem like totals. However, since we're computing a ratio, this shouldn't matter. But, make sure !!!!!!!!!!!!!!!!
+    lg_rim_pct = get_league_ratio_sum_expr("FGM_Per100Possessions_Restricted_Area", "FGA_Per100Possessions_Restricted_Area")
+    lg_mid_pct = get_league_ratio_sum_expr("FGM_Per100Possessions_Mid_Range", "FGA_Per100Possessions_Mid_Range")
+    lg_fg3_pct = get_league_ratio_sum_expr("FG3M_Per100Possessions", "FG3A_Per100Possessions")
+
+    df = df.with_columns([
+        (pl.col("FG_PCT_Restricted_Area") - lg_rim_pct).alias("rim_efficiency_rel"),
+        (pl.col("FG_PCT_Mid_Range") - lg_mid_pct).alias("mid_efficiency_rel"),
+        (pl.col("FG3_PCT") - lg_fg3_pct).alias("three_pt_efficiency_rel")
+    ])
+
+    # =========================================================================
+    # 9. Output Selection & Save
+    # =========================================================================
+    # Define features for similarity
+    sim_features = [
+        # Identifiers
+        "PLAYER_ID", "SEASON_YEAR",
+        
+        # Offensive Archetype
+        "three_pt_proficiency", "box_creation", "offensive_load", 
+        "heliocentricity", "passing_efficiency", "assist_to_load",
+        "ts_pct_rel", "scoring_gravity", "tov_economy", "ft_rate",
+        
+        # Shot Diet
+        "fga_rim_freq", "fga_floater_freq", "fga_mid_freq", "fga_corner_freq", "fga_ab3_freq",
+        "drive_rate",
+        
+        # Granular Style (New)
+        "freq_alley_oop", "eff_alley_oop",
+        "freq_bank_shot", "eff_bank_shot",
+        "freq_dunk", "eff_dunk",
+        "freq_fadeaway", "eff_fadeaway",
+        "freq_finger_roll", "eff_finger_roll",
+        "freq_hook_shot", "eff_hook_shot",
+        "freq_jump_shot", "eff_jump_shot",
+        "freq_layup", "eff_layup",
+        "freq_tip_shot", "eff_tip_shot",
+        
+        # Playtype Freq
+        "pullup_fga_freq", "drive_fga_freq", "catch_shoot_fga_freq", 
+        "paint_touch_fga_freq", "post_touch_fga_freq", "elbow_touch_fga_freq",
+        
+        # Touch Distribution
+        "elbow_touch_freq", "post_touch_freq", "paint_touch_freq",
+        
+        # Defense/Reb
+        "OREB_PCT", "DREB_PCT", "PCT_BLK", "PCT_STL", 
+        "stocks", "def_versatility", "rim_deterrence", "rim_contests_per_min", "PCT_PLUSMINUS",
+        
+        # Hustle
+        "CONTESTED_SHOTS_Per100Possessions", "DEFLECTIONS_Per100Possessions", "CHARGES_DRAWN_Per100Possessions", 
+        "SCREEN_ASSISTS_Per100Possessions", "LOOSE_BALLS_RECOVERED_Per100Possessions", "BOX_OUTS_Per100Possessions",
+        "PF_Per100Possessions",
+        
+        # Physical/Movement
+        "def_miles_per_min", "off_miles_per_min", 
+        "AVG_SPEED", "AVG_SPEED_OFF", "AVG_SPEED_DEF",
+        "z_height", "z_weight", "z_age",
+        
+        # Relative Efficiency
+        "rim_efficiency_rel", "mid_efficiency_rel", "three_pt_efficiency_rel"
+    ]
+
+    # Select similarity features
+    # CRITICAL: Apply Z-Score Normalization to ALL similarity features for search optimization
+    # We exclude ID columns from normalization
+    id_cols = ["PLAYER_ID", "SEASON_YEAR"]
+    numeric_cols = [c for c in sim_features if c not in id_cols]
+    
+    df_similarity = df.select(sim_features).with_columns([
+        calculate_zscore(col).alias(col) 
+        for col in numeric_cols
+    ])
+    
+    # Fill NaNs resulting from Z-score (e.g. std=0) with 0
+    df_similarity = df_similarity.fill_nan(0.0).fill_null(0.0)
+
+    # ---------------------------------------------------------
+    # Profile Output (Rich stats for UI)
+    # ---------------------------------------------------------
+    profile_cols = [
+        # Identity
+        "PLAYER_ID", "PLAYER_NAME", "SEASON_YEAR", "TEAM_ABBREVIATION", "PLAYER_POSITION", "AGE", "GP", "MIN1_PerGame",
+        
+        # Base Stats (Per Game)
+        "PTS_PerGame", "AST_PerGame", "REB_PerGame", "STL_PerGame", "BLK_PerGame", "TOV_PerGame",
+        "FG_PCT", "FG3_PCT", "FT_PCT",
+        
+        # Advanced
+        "TS_PCT", "USG_PCT", "AST_PCT", "OFF_RATING", "DEF_RATING", "NET_RATING", "PIE", "PACE",
+        
+        # Archetype / Computed
+        "offensive_load", "box_creation", "passing_efficiency", "scoring_gravity", "def_versatility", "three_pt_proficiency",
+        "drive_rate",
+        
+        # Shooting Zones (Volumes & Efficiency)
+        "FGA_Per100Possessions_Restricted_Area", "FG_PCT_Restricted_Area",
+        "FGA_Per100Possessions_Mid_Range", "FG_PCT_Mid_Range",
+        "FGA_Per100Possessions_Above_the_Break_3", "FG_PCT_Above_the_Break_3",
+        "FGA_Per100Possessions_Left_Corner_3", "FG_PCT_Left_Corner_3",
+        "FGA_Per100Possessions_Right_Corner_3", "FG_PCT_Right_Corner_3",
+        
+        # Playtypes
+        "PULL_UP_FGA_PerGame", "PULL_UP_FG_PCT",
+        "CATCH_SHOOT_FGA_PerGame", "CATCH_SHOOT_FG_PCT",
+        "DRIVES_PerGame", "DRIVE_FG_PCT", "DRIVE_PASSES_PCT",
+        
+        # Physical & Hustle
+        "PLAYER_HEIGHT_INCHES", "PLAYER_WEIGHT",
+        "AVG_SPEED_OFF", "AVG_SPEED_DEF", "DIST_MILES_PerGame",
+        "CONTESTED_SHOTS_PerGame", "DEFLECTIONS_PerGame",
+        
+        # Shot Creation Context
+        "PCT_UAST_2PM_Restricted_Area", "PCT_UAST_3PM_Above_the_Break_3"
+    ]
+    
+    # Filter columns to ensure they exist (e.g. if some optional tracking stats are missing)
+    final_profile_cols = [c for c in profile_cols if c in df.columns]
+    
+    df_profile = df.select(final_profile_cols)
+
+    # Validations
+    if df_similarity.select(["PLAYER_ID", "SEASON_YEAR"]).is_duplicated().any():
+        raise ValueError("Duplicate PLAYER_ID + SEASON_YEAR detected in output!")
+
+    # Logging
+    logging.info(f"Final Similarity Shape: {df_similarity.shape}")
+    logging.info(f"Final Profile Shape: {df_profile.shape}")
+    
+    null_counts = df_similarity.null_count().transpose(include_header=True)
+    logging.info("Null counts per feature (Top 5):")
+    logging.info(null_counts.filter(pl.col("column_0") != "PLAYER_ID").sort("column_1", descending=True).head(5))
+
+    # Save
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    df_similarity.write_parquet(OUTPUT_SIMILARITY)
+    logging.info(f"Saved similarity features to {OUTPUT_SIMILARITY}")
+    
+    df_profile.write_parquet(OUTPUT_PROFILE)
+    logging.info(f"Saved profile features to {OUTPUT_PROFILE}")
 
 
-EFFICIENCY
-- turnover economy: $$TOV / OffensiveLoad$$
-- true shooting added: $$(TS\% - LeagueTS\%) \times Volume_{coeff}$$
-- effective fg% (relative): $$eFG\%_{Player} - eFG\%_{League}$$
-- NEW true shooting % (relative): $PlayerTS\% - LeagueAverageTS\%$
-
-GRAVITY
-- scoring gravity: $$(PTS_{Per100Poss}) \times (TrueShooting_{Rel})$$
-    - relative true shooting (???): player % - league average %
-- 3pt proficiency: $$(2 / (1 + e^{-3PA_{Per100}})) - 1) \times 3P\%$$
-
-SPATIAL (should we consider per100poss here???)
-- rim frequency: $$FGA_{<3ft} / FGA_{Total}$$
-- short mid frequency: $$FGA_{3-10ft} / FGA_{Total}$$
-- long mid frequency: $$FGA_{10ft-3pt} / FGA_{Total}$$
-- corner 3 frequency: $$FGA_{Corner3} / FGA_{Total}$$
-- above the break 3: $$FGA_{AB3} / FGA_{Total}$$
-- shot range variance: $$StdDev(ShotDistance)$$
-- NEW mid-range frequency: $1 - (RimFreq + Corner3Freq + AB3Freq)$
-
-SKILL
-- rim efficiency (relative): $$PlayerFG\%_{Rim} - LeagueAvgFG\%_{Rim}$$
-- mid efficiency (relative): $$PlayerFG\%_{Mid} - LeagueAvgFG\%_{Mid}$$
-- 3pt efficiency (relative): $$PlayerFG\%_{3pt} - LeagueAvgFG\%_{3pt}$$
-
-PHYSICALITY
-- free throw rate (FTr): $$FTA / FGA$$
-- offensive reb %: ORB%
-
-STRATEGY
-- moreyball index: $$(FGA_{Rim} + FGA_{3pt}) / FGA_{Total}$$
-
-IMPACT
-- stocks per 100 poss: $$(STL + BLK)$$
-- defensive playmaking (per 100 poss): $$STL + BLK + Deflections + Charges$$
-- defensive box +/-: $$BPM_{Def}$$
-- rim deterrence: $$OppFG\%_{Rim}$$
-    - use on/off diff; opponent rim fg% diff (i.e., average % vs % when guarded by player) rather than raw opponent rim fg%
-
-AGGRESSION
-- foul rate per 100 poss: PF
-
-ROLE
-- block rate: BLK%
-- steal rate: STL%
-- defensive reb %: DRB%
-- defensive load: $$(Reb\% \times 0.4) + (BLK\% \times 0.3) + (STL\% \times 0.3)$$
-
-VERSATILITY
-- defensive versatility proxy: $$(BLK\%_{Z} - STL\%_{Z})^2$$ 
-- NEW alternate defensive versatility: $$(Z_{\text{DREB}} \times 0.4) + (Z_{\text{STL}} \times 0.3) + (Z_{\text{BLK}} \times 0.3)$$
-
-ACTIVITY
-- defensive miles: $$DistTraveled_{Def} / Minutes$$
-- NEW offensive miles: $$DistTraveled_{Off} / Minutes$$
-
-
-PHYSICAL 
-- height (z-scored): $$(Height - AvgHeight_{Pos}) / \sigma$$
-- weight (z-scored): $$(Weight - AvgWeight_{Pos}) / \sigma$$
-
-CONTEXT
-- age: PlayerAge
-- experience: YearsPro
-
-4 FACTORS (I believe these are already factored in above)
-- shooting: eFG%
-- turnovers: TOV%
-- rebounding: REB%
-- free throws: FTRate
-
-RAW DATA
-- 
-
-
-FINAL FEATURE SET TO BE USED FOR EACH PLAYER/SEASON COMBO:
-1. offensive_load: (Ast-(0.38*BoxCr))0.75 + FGA + FTA0.44 + BoxCr + TOV
-    - AST = assists per 100 possessions
-    - BoxCr = box_creation
-    - FGA = field goals attempted per 100 possessions
-    - FTA = free throws attempted per 100 possessions
-    - TOV = turnovers committed per 100 possessions
-    - all of these metrics exist in our data as per-100 possessions; no changes needed (AST, FGA, FTA, TOV, PTS, FG3M, FG3A from base_stats)
-2. Heliocentricity: Mean(Z(USG%), Z(AST%), Z(TimeOfPoss/MIN))
-    - Z = z-score computed using all eligible players for that particular season
-    - USG% and AST% exist in our data (USG_PCT and AST_PCT) and are percentages, so they're pace-independant and ok as-is
-    - NOTE: TimeOfPoss appears to be divided by some value (perhaps per-minute or per-24sec) since the highest value is 9.1, but I'm not sure, we need to check through this (!!!!!!!!!!!!!!!!!!)
-        - Answer: TimeOfPoss = minutes the player possesses the ball; rewards players that play more minutes, so divide by MIN
-3. AVG_SEC_PER_TOUCH, AVG_DRIB_PER_TOUCH (from possessions)
-    - these are PerGame, but represent a rate, so they're pace-independent and we can use them as-is
-4. 3pt_proficiency: (2/(1 + e^(-3PA)) - 1) * 3P%
-    - 3PA = 3-point field goals attempted per 100 possessions (FG3A from base_stats)
-    - 3P% = 3-point field goal percentage (FG3_PCT from base_stats)
-5. box_creation: Ast*0.1843 + (Pts+TOV)*0.0969 - 2.3021*(3pt_proficiency) + 0.0582*(Ast*(Pts+TOV)*3pt_proficiency) - 1.1942
-    - all of these metrics exist in our data as per-100 possessions; no changes needed (AST, PTS, TOV from base_stats)
-6. passing_efficiency: AST/POTENTIAL_AST
-    - NOTE: AST is per-100 possessions, but POTENTIAL_AST is perGame; we need to convert one to make this a fair ratio: AST_pg = AST_p100 * (possessions_per_game)/100. Then, do AST_pg / POTENTIAL_AST
-7. assist_to_load: AST/offensive_load
-8. ts_pct_rel: player ts% - league average ts% in season (TS_PCT from adv_stats)
-8. scoring_gravity: PTSPer100Poss * TrueShootingPctRel
-    - PTSPer100Poss = PTS from base_stats
-9. fga_rim_freq = FGA_Restricted / FGA_TOTAL
-    - FGA_TOTAL = field goals attempted per 100 possessions (FGA from base_stats)
-    - FGA_Restricted = restricted area field goals attempted per 100 possessions (FGA_Restricted_Area from shot_splits)
-        - NOTE: the data shows totals for this, we need to convert this to per 100 possessions!!!!!!!
-10. fga_floater_freq = FGA_PaintNonRA / FGA_Total
-    - FGA_PaintNonRA = paint and non-ra field goals attempted per 100 possessions (FGA_In_The_Paint_(Non_RA) from shot_splits)
-11.fga_mid_freq = FGA_MidRange / FGA_Total
-    - FGA_MidRange = mid-range field goals attempted per 100 possessions (FGA_Mid_Range from shot_splits)
-12 fga_corner_freq = FGA_Corner3 / FGA_Total
-    - FGA_Corner3 = corner 3 field goals attempted per 100 possessions (FGA_Left_Corner_3 + FGA_Right_Corner_3 from shot_splits)
-13. fga_ab3_freq = FGA_AboveTheBreak3 / FGA_Total
-    - FGA_AboveTheBreak3 = above the break 3 field goals attempted per 100 possessions (FGA_Above_the_Break_3 from shot_splits)
-14. PCT_UAST_FGM (from shot-splits)
-    - NOTE: this field doesn't exist
-15. pullup_fga_freq = PullUp_FGA / FGA; repeat for DRIVE_FGA, CATCH_SHOOT_FGA, PAINT_TOUCH_FGA, POST_TOUCH_FGA, and ELBOW_TOUCH_FGA
-    - NOTE: PullUp_FGA comes from PULL_UP_FGA in pull_up_shot but is perGame, so we need to convert it to per 100 possessions since FGA is per 100 possessions; the same applies to DRIVE, CATCH_SHOOT, etc.
-16. drive_rate = DRIVES per 100 possessions
-    - NOTE: convert DRIVES in drives from perGame to per 100 possessions
-17. elbow_touch_freq = ElbowTouches / TotalTouches; repeat for POST_TOUCHES and PAINT_TOUCHES
-    - ElbowTouches = ELBOW_TOUCHES from possessions
-    - TotalTouches = TOUCHES from possessions
-    - NOTE: these are PerGame, but need to convert to Per 100 possessions since we're computing a ratio
-19. tov_economy: TOV / offensive_load
-    - no changes needed, TOV from base_stats is already per 100 possessions
-20. ft_rate: FTA / FGA
-    - no changes needed, FTA and FGA from base_stats are already per 100 possessions
-21. OREB_PCT and DREB_PCT from adv_stats (already per 100 possessions)
-22. PCT_BLOCK and PCT_STEAL from defense_stats (already per 100 possessions)
-23. stocks: STL + BLK from base_stats (already per 100 possessions)
-24. def_versatility: 1/(1+abs(Z_BLK - Z_STL))
-    - Z_BLK and Z_STL = z scores of BLK and STL per 100 possessions
-25. rim_deterrence: OppFG_Rim - LeagueAvgRim
-    - OppFG_Rim = DEF_RIM_FG_PCT from defense (no need to convert to per 100 possessions)
-    - LeagueAvgRim = col sum FGM_Restricted_Area / col sum FGA_Restricted_Area (no need to convert to per 100 possessions)
-26. rim_contest_rate: DFGA_Rim / MIN1
-    - DFGA_Rim = DEF_RIM_FGA from defense
-    - NOTE: should we convert DFGA_Rim (currently perGame) to per 100 possessions? If so, do we still need to divide by MIN???????????
-27. CONTESTED_SHOTS (from hustle)
-    - NOTE: need to convert from perGame to per 100 possessions
-27. PCT_PLUSMINUS (fg% when defended by player - normal fg% (lower is better))
-28. def_miles_per_min: DIST_MILES_DEF / MIN1
-    - NOTE: DIST_MILES_DEF is PerGame from speed_distance; is dividing by MIN1 from adv_stats fair?
-29. offensive_miles_per_min: DIST_MILES_OFF / MIN1
-30. AVG_SPEED, AVG_SPEED_OFF, AVG_SPEED_DEF (from speed_distance)
-30. DEFLECTIONS, CHARGES_DRAWN, SCREEN_ASSISTS, LOOSE_BALLS_RECOVERED, BOX_OUTS (from hustle)
-    - NOTE: need to convert from perGame to per 100 possessions
-31. Z(PLAYER_HEIGHT_INCHES) and Z(PLAYER_WEIGHT) (from bio_stats)
-    - z score of height and weight
-32. Z(AGE) (from bio_stats)
-33. PF (from base_stats)
-34. rim_efficiency_rel: FG_PCT_Restricted_Area - LeagueAvgFG_PCT_Restricted_Area
-    - LeagueAvgFG_PCT_Restricted_Area = col sum FGM_Restricted_Area / col sum FGA_Restricted_Area
-35. mid_efficiency_rel: FG_PCT_Mid_Range - LeagueAvgFG_PCT_Mid_Range
-    - LeagueAvgFG_PCT_Mid_Range = col sum FGM_Mid_Range / col sum FGA_Mid_Range
-36. 3pt_efficiency_rel: FG3_PCT - LeagueAvgFG3_PCT
-    - LeagueAvgFG3_PCT = col sum FG3M / col sum FG3A
-37.
-
-
-
-
-- rim efficiency (relative): $$PlayerFG\%_{Rim} - LeagueAvgFG\%_{Rim}$$
-- mid efficiency (relative): $$PlayerFG\%_{Mid} - LeagueAvgFG\%_{Mid}$$
-- 3pt efficiency (relative): $$PlayerFG\%_{3pt} - LeagueAvgFG\%_{3pt}$$
-
-FG_PCT_Less_Than_8_ft_	FG_PCT_8_16_ft_	FG_PCT_16_24_ft_	FG_PCT_24+_ft_	FG_PCT_Back_Court_Shot
-EFG_PCT_Less_Than_8_ft_	EFG_PCT_8_16_ft_	EFG_PCT_16_24_ft_	EFG_PCT_24+_ft_	EFG_PCT_Back_Court_Shot
-PCT_AST_FGM_Less_Than_8_ft_	PCT_AST_FGM_8_16_ft_	PCT_AST_FGM_16_24_ft_	PCT_AST_FGM_24+_ft_	PCT_AST_FGM_Back_Court_Shot	PCT_UAST_FGM_Less_Than_8_ft_	PCT_UAST_FGM_8_16_ft_	PCT_UAST_FGM_16_24_ft_	PCT_UAST_FGM_24+_ft_	PCT_UAST_FGM_Back_Court_Shot
-FG_PCT_Restricted_Area	FG_PCT_In_The_Paint_(Non_RA)	FG_PCT_Mid_Range	FG_PCT_Left_Corner_3	FG_PCT_Right_Corner_3	FG_PCT_Above_the_Break_3	FG_PCT_Backcourt
-EFG_PCT_Restricted_Area	EFG_PCT_In_The_Paint_(Non_RA)	EFG_PCT_Mid_Range	EFG_PCT_Left_Corner_3	EFG_PCT_Right_Corner_3	EFG_PCT_Above_the_Break_3	EFG_PCT_Backcourt
-PCT_AST_FGM_Restricted_Area	PCT_AST_FGM_In_The_Paint_(Non_RA)	PCT_AST_FGM_Mid_Range	PCT_AST_FGM_Left_Corner_3	PCT_AST_FGM_Right_Corner_3	PCT_AST_FGM_Above_the_Break_3	PCT_AST_FGM_Backcourt	PCT_UAST_FGM_Restricted_Area	PCT_UAST_FGM_In_The_Paint_(Non_RA)	PCT_UAST_FGM_Mid_Range	PCT_UAST_FGM_Left_Corner_3	PCT_UAST_FGM_Right_Corner_3	PCT_UAST_FGM_Above_the_Break_3	PCT_UAST_FGM_Backcourt
-FG_PCT_Alley_Oop	FG_PCT_Bank_Shot	FG_PCT_Dunk	FG_PCT_Fadeaway	FG_PCT_Finger_Roll	FG_PCT_Hook_Shot	FG_PCT_Jump_Shot	FG_PCT_Layup	FG_PCT_Tip_Shot
-EFG_PCT_Alley_Oop	EFG_PCT_Bank_Shot	EFG_PCT_Dunk	EFG_PCT_Fadeaway	EFG_PCT_Finger_Roll	EFG_PCT_Hook_Shot	EFG_PCT_Jump_Shot	EFG_PCT_Layup	EFG_PCT_Tip_Shot
-PCT_AST_FGM_Alley_Oop	PCT_AST_FGM_Bank_Shot	PCT_AST_FGM_Dunk	PCT_AST_FGM_Fadeaway	PCT_AST_FGM_Finger_Roll	PCT_AST_FGM_Hook_Shot	PCT_AST_FGM_Jump_Shot	PCT_AST_FGM_Layup	PCT_AST_FGM_Tip_Shot	PCT_UAST_FGM_Alley_Oop	PCT_UAST_FGM_Bank_Shot	PCT_UAST_FGM_Dunk	PCT_UAST_FGM_Fadeaway	PCT_UAST_FGM_Finger_Roll	PCT_UAST_FGM_Hook_Shot	PCT_UAST_FGM_Jump_Shot	PCT_UAST_FGM_Layup	PCT_UAST_FGM_Tip_Shot
-
-
-to get Possessions_PerGame, calculate (PACE (from adv_stats)/48)*MIN (from bio_stats); we use this to normalize necessary features to per_100_poss
-NOTE: FGA, FGA_8_16_ft_, etc. are TOTALS; they don't accurately reflect per 100 poss. We need to convert these. Nevermind, I flipped the order so base_stats is first
-
-MIN is per-100 poss, MIN1 is per game. Keep this in mind.
-
-possessions per game = PACE/48 * MIN1
-per_100_poss_stat = (per_game_stat/possessions_per_game) * 100
-
-"""
-
-
+if __name__ == "__main__":
+    try:
+        df_master = load_data(INPUT_FILE)
+        feature_engineering_pipeline(df_master)
+    except Exception as e:
+        logging.error(f"Pipeline failed: {e}")
+        sys.exit(1)
