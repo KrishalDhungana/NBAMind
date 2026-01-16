@@ -56,7 +56,7 @@ REQUIRED_COLUMNS = [
     "CATCH_SHOOT_FGA_PerGame", "CATCH_SHOOT_FG_PCT",
     "DRIVES_PerGame", "DRIVE_FG_PCT", "DRIVE_PASSES_PCT",
     "PAINT_TOUCH_FGA_PerGame", "POST_TOUCH_FGA_PerGame", "ELBOW_TOUCH_FGA_PerGame",
-    "TOUCHES_PerGame", "ELBOW_TOUCHES_PerGame", "POST_TOUCHES_PerGame", "PAINT_TOUCHES_PerGame",
+    "TOUCHES_PerGame", "ELBOW_TOUCHES_PerGame", "POST_TOUCHES_PerGame", "PAINT_TOUCHES_PerGame", "TIME_OF_POSS_PerGame",
     # Defense Tracking
     "DEF_RIM_FGA_PerGame", "DEF_RIM_FG_PCT",
     # Hustle / Physical
@@ -66,7 +66,7 @@ REQUIRED_COLUMNS = [
     "AVG_SPEED", "AVG_SPEED_OFF", "AVG_SPEED_DEF",
     "PLAYER_HEIGHT_INCHES", "PLAYER_WEIGHT", "AGE",
     # Assisted/Unassisted (Optional but good for profile)
-    "PCT_UAST_2PM_Restricted_Area", "PCT_UAST_3PM_Above_the_Break_3",
+    "PCT_UAST_2PM_Restricted_Area", "PCT_UAST_3PM_Above_the_Break_3", "PCT_UAST_FGM",
     # Granular Shot Types (Style)
     "FGA_Per100Possessions_Alley_Oop", "FG_PCT_Alley_Oop",
     "FGA_Per100Possessions_Bank_Shot", "FG_PCT_Bank_Shot",
@@ -116,6 +116,12 @@ def load_data(file_path: Path) -> pl.DataFrame:
     if missing:
         # We strict fail if any column is missing to ensure data integrity
         raise ValueError(f"Missing required columns in master dataset: {missing}")
+    # Ensure all statistical columns are Float64
+    skip_cols = {"PLAYER_ID", "PLAYER_NAME", "SEASON_YEAR", "TEAM_ID", "TEAM_ABBREVIATION", "GP", "PLAYER_POSITION"}
+    cols_to_cast = [c for c in df.columns if c in REQUIRED_COLUMNS and c not in skip_cols]
+    df = df.with_columns([
+        pl.col(c).cast(pl.Float64, strict=False) for c in cols_to_cast
+    ])
     return df
 
 # ----------------------------
@@ -137,6 +143,16 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> None:
     9. Final Selection & Saving
     """
     logging.info(f"Starting pipeline with shape: {df.shape}")
+
+    # -------------------------------------------------------------------------
+    # 0. Data Cleaning & Type Casting
+    # -------------------------------------------------------------------------
+    # Ensure all statistical columns are Float64 to prevent "division by String" errors.
+    skip_cols = {"PLAYER_NAME", "SEASON_YEAR", "TEAM_ABBREVIATION", "PLAYER_POSITION"}
+    cols_to_cast = [c for c in df.columns if c in REQUIRED_COLUMNS and c not in skip_cols]
+    df = df.with_columns([
+        pl.col(c).cast(pl.Float64, strict=False) for c in cols_to_cast
+    ])
 
     # =========================================================================
     # 1. Unit Handling & Estimations
@@ -215,6 +231,8 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> None:
     # =========================================================================
     # 4. Passing & Playmaking Efficiency
     # =========================================================================
+    logging.info("Computing passing and playmaking metrics...")
+
     # Passing Efficiency: AST (pg) / Potential AST (pg)
     # Convert AST p100 back to PG to match POTENTIAL_AST units
     ast_pg = (pl.col("AST_Per100Possessions") * (pl.col("poss_PerGame") / 100.0))
@@ -231,6 +249,16 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> None:
     
     # Denominator: FGA Per 100
     fga_total = pl.col("FGA_Per100Possessions") + 1e-6
+
+    # Calculate total FGA from zones (since zone columns appear to be totals)
+    fga_zones_sum = (
+        pl.col("FGA_Per100Possessions_Restricted_Area") +
+        pl.col("FGA_Per100Possessions_In_The_Paint_(Non_RA)") +
+        pl.col("FGA_Per100Possessions_Mid_Range") +
+        pl.col("FGA_Per100Possessions_Left_Corner_3") +
+        pl.col("FGA_Per100Possessions_Right_Corner_3") +
+        pl.col("FGA_Per100Possessions_Above_the_Break_3")
+    ) + 1e-6
 
     # Granular Style Metrics (Tendency & Efficiency)
     # Isolating Style from Volume by using Frequencies (FGA_Type / Total_FGA)
@@ -256,13 +284,13 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> None:
     ])
 
     # Zone Frequencies (Already Per100 inputs)
-    # NOTE: THESE FIELDS DON'T ACTUALLY LOOK RIGHT!!!!! e.g., FGA_Per100Possessions_Restricted_Area for 2019-2020 James Harden is 428. We need to fix this.
+    # FIX: These columns appear to be totals, so we normalize by the sum of zone attempts.
     df = df.with_columns([
-        (pl.col("FGA_Per100Possessions_Restricted_Area") / fga_total).alias("fga_rim_freq"),
-        (pl.col("FGA_Per100Possessions_In_The_Paint_(Non_RA)") / fga_total).alias("fga_floater_freq"),
-        (pl.col("FGA_Per100Possessions_Mid_Range") / fga_total).alias("fga_mid_freq"),
-        ((pl.col("FGA_Per100Possessions_Left_Corner_3") + pl.col("FGA_Per100Possessions_Right_Corner_3")) / fga_total).alias("fga_corner_freq"),
-        (pl.col("FGA_Per100Possessions_Above_the_Break_3") / fga_total).alias("fga_ab3_freq"),
+        (pl.col("FGA_Per100Possessions_Restricted_Area") / fga_zones_sum).alias("fga_rim_freq"),
+        (pl.col("FGA_Per100Possessions_In_The_Paint_(Non_RA)") / fga_zones_sum).alias("fga_floater_freq"),
+        (pl.col("FGA_Per100Possessions_Mid_Range") / fga_zones_sum).alias("fga_mid_freq"),
+        ((pl.col("FGA_Per100Possessions_Left_Corner_3") + pl.col("FGA_Per100Possessions_Right_Corner_3")) / fga_zones_sum).alias("fga_corner_freq"),
+        (pl.col("FGA_Per100Possessions_Above_the_Break_3") / fga_zones_sum).alias("fga_ab3_freq"),
     ])
 
     # Playtype Frequencies (PerGame -> Per100 -> Ratio); NOTE: the sum of these DO NOT add up to fga_total (e.g., Aaron Gordon 2019-2020 averages 12.37 fga/game, but the sum of these fga's/game is 13.8)
@@ -324,6 +352,8 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> None:
     # =========================================================================
     # 7. Hustle & Movement
     # =========================================================================
+    logging.info("Computing hustle and movement metrics...")
+
     # Hustle stats: PerGame -> Per100
     hustle_cols = [
         "CONTESTED_SHOTS_PerGame", "DEFLECTIONS_PerGame", "CHARGES_DRAWN_PerGame",
@@ -346,6 +376,8 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> None:
     # =========================================================================
     # 8. Relative Efficiency by Zone
     # =========================================================================
+    logging.info("Computing relative zone efficiency metrics...")
+
     # Relative Efficiency: Player FG% - League FG% (Ratio of Sums)
     # NOTE: columns like FGM_Per100Possessions_Restricted_Area aren't represented as Per100Possessions, but rather seem like totals. However, since we're computing a ratio, this shouldn't matter. But, make sure !!!!!!!!!!!!!!!!
     lg_rim_pct = get_league_ratio_sum_expr("FGM_Per100Possessions_Restricted_Area", "FGA_Per100Possessions_Restricted_Area")
@@ -369,7 +401,7 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> None:
         # Offensive Archetype
         "three_pt_proficiency", "box_creation", "offensive_load", 
         "heliocentricity", "passing_efficiency", "assist_to_load",
-        "ts_pct_rel", "scoring_gravity", "tov_economy", "ft_rate",
+        "ts_pct_rel", "scoring_gravity", "tov_economy", "ft_rate", "PCT_UAST_FGM",
         
         # Shot Diet
         "fga_rim_freq", "fga_floater_freq", "fga_mid_freq", "fga_corner_freq", "fga_ab3_freq",
@@ -411,19 +443,16 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> None:
         "rim_efficiency_rel", "mid_efficiency_rel", "three_pt_efficiency_rel"
     ]
 
-    # Select similarity features
-    # CRITICAL: Apply Z-Score Normalization to ALL similarity features for search optimization
-    # We exclude ID columns from normalization
+    # Select similarity features & apply Z-Score Normalization to ALL similarity features (excluding ID cols) for search optimization
     id_cols = ["PLAYER_ID", "SEASON_YEAR"]
     numeric_cols = [c for c in sim_features if c not in id_cols]
-    
     df_similarity = df.select(sim_features).with_columns([
         calculate_zscore(col).alias(col) 
         for col in numeric_cols
     ])
     
     # Fill NaNs resulting from Z-score (e.g. std=0) with 0
-    df_similarity = df_similarity.fill_nan(0.0).fill_null(0.0)
+    # df_similarity = df_similarity.fill_nan(0.0).fill_null(0.0)
 
     # ---------------------------------------------------------
     # Profile Output (Rich stats for UI)
@@ -466,34 +495,32 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> None:
     
     # Filter columns to ensure they exist (e.g. if some optional tracking stats are missing)
     final_profile_cols = [c for c in profile_cols if c in df.columns]
-    
     df_profile = df.select(final_profile_cols)
 
-    # Validations
+    # Validation
     if df_similarity.select(["PLAYER_ID", "SEASON_YEAR"]).is_duplicated().any():
         raise ValueError("Duplicate PLAYER_ID + SEASON_YEAR detected in output!")
-
-    # Logging
+    null_counts = df_similarity.null_count().transpose(include_header=True)
+    null_counts.columns = ["feature", "null_count"]
+    logging.info("Null counts per feature (Top 5):")
+    logging.info(null_counts.filter(pl.col("feature") != "PLAYER_ID").sort("null_count", descending=True).head(5))
     logging.info(f"Final Similarity Shape: {df_similarity.shape}")
     logging.info(f"Final Profile Shape: {df_profile.shape}")
-    
-    null_counts = df_similarity.null_count().transpose(include_header=True)
-    logging.info("Null counts per feature (Top 5):")
-    logging.info(null_counts.filter(pl.col("column_0") != "PLAYER_ID").sort("column_1", descending=True).head(5))
 
     # Save
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     df_similarity.write_parquet(OUTPUT_SIMILARITY)
     logging.info(f"Saved similarity features to {OUTPUT_SIMILARITY}")
-    
     df_profile.write_parquet(OUTPUT_PROFILE)
     logging.info(f"Saved profile features to {OUTPUT_PROFILE}")
 
 
 if __name__ == "__main__":
-    try:
-        df_master = load_data(INPUT_FILE)
-        feature_engineering_pipeline(df_master)
-    except Exception as e:
-        logging.error(f"Pipeline failed: {e}")
-        sys.exit(1)
+    # try:
+    #     df_master = load_data(INPUT_FILE)
+    #     feature_engineering_pipeline(df_master)
+    # except Exception as e:
+    #     logging.error(f"Pipeline failed: {e}")
+    #     sys.exit(1)
+    df_master = load_data(INPUT_FILE)
+    feature_engineering_pipeline(df_master)

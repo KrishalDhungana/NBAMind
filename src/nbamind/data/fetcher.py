@@ -32,7 +32,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 CACHE_DIR = Path("data/raw")
-MIN_INTERVAL_S = 1.2
+MIN_INTERVAL_S = 10
 TIMEOUT_S = 15
 MAX_RETRIES = 5
 

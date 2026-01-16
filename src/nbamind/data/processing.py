@@ -36,6 +36,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 PROCESSED_DIR = Path("data/processed")
+START_SEASON = 2015 # 2015/16 season
 # Minimum thresholds to qualify a player for detailed, per-player API calls
 MIN_GAMES_PLAYED = 15
 MIN_MPG = 20
@@ -74,6 +75,16 @@ LEAGUE_WIDE_ENDPOINTS = {
         "cls": leaguedashplayerstats.LeagueDashPlayerStats, # ['PLAYER_ID', 'PLAYER_NAME', 'NICKNAME', 'TEAM_ID', 'TEAM_ABBREVIATION', 'AGE', 'GP', 'W', 'L', 'W_PCT', 'MIN', 'DEF_RATING', 'DREB', 'DREB_PCT', 'PCT_DREB', 'STL', 'PCT_STL', 'BLK', 'PCT_BLK', 'OPP_PTS_OFF_TOV', 'OPP_PTS_2ND_CHANCE', 'OPP_PTS_FB', 'OPP_PTS_PAINT', 'DEF_WS', 'DEF_WS_RAW', 'GP_RANK', 'W_RANK', 'L_RANK', 'W_PCT_RANK', 'MIN_RANK', 'DEF_RATING_RANK', 'DREB_RANK', 'DREB_PCT_RANK', 'PCT_DREB_RANK', 'STL_RANK', 'PCT_STL_RANK', 'BLK_RANK', 'PCT_BLK_RANK', 'OPP_PTS_OFF_TOV_RANK', 'OPP_PTS_2ND_CHANCE_RANK', 'OPP_PTS_FB_RANK', 'OPP_PTS_PAINT_RANK', 'DEF_WS_RANK']
         "params": {
             "measure_type_detailed_defense": "Defense",
+            "per_mode_detailed": "Per100Possessions",
+            "season_type_all_star": "Regular Season",
+            "league_id_nullable": "00",
+        },
+        "result_set": "LeagueDashPlayerStats",
+    },
+    "scoring_stats": {
+        "cls": leaguedashplayerstats.LeagueDashPlayerStats, # ['PLAYER_ID', 'PLAYER_NAME', 'NICKNAME', 'TEAM_ID', 'TEAM_ABBREVIATION', 'AGE', 'GP', 'W', 'L', 'W_PCT', 'MIN', 'PCT_FGA_2PT', 'PCT_FGA_3PT', 'PCT_PTS_2PT', 'PCT_PTS_2PT_MR', 'PCT_PTS_3PT', 'PCT_PTS_FB', 'PCT_PTS_FT', 'PCT_PTS_OFF_TOV', 'PCT_PTS_PAINT', 'PCT_AST_2PM', 'PCT_UAST_2PM', 'PCT_AST_3PM', 'PCT_UAST_3PM', 'PCT_AST_FGM', 'PCT_UAST_FGM', 'FGM', 'FGA', 'FG_PCT', 'GP_RANK', 'W_RANK', 'L_RANK', 'W_PCT_RANK', 'MIN_RANK', 'PCT_FGA_2PT_RANK', 'PCT_FGA_3PT_RANK', 'PCT_PTS_2PT_RANK', 'PCT_PTS_2PT_MR_RANK', 'PCT_PTS_3PT_RANK', 'PCT_PTS_FB_RANK', 'PCT_PTS_FT_RANK', 'PCT_PTS_OFF_TOV_RANK', 'PCT_PTS_PAINT_RANK', 'PCT_AST_2PM_RANK', 'PCT_UAST_2PM_RANK', 'PCT_AST_3PM_RANK', 'PCT_UAST_3PM_RANK', 'PCT_AST_FGM_RANK', 'PCT_UAST_FGM_RANK', 'FGM_RANK', 'FGA_RANK', 'FG_PCT_RANK', 'TEAM_COUNT']
+        "params": {
+            "measure_type_detailed_defense": "Scoring",
             "per_mode_detailed": "Per100Possessions",
             "season_type_all_star": "Regular Season",
             "league_id_nullable": "00",
@@ -542,8 +553,8 @@ def fetch_and_join_player_specific_data(
     eligible_df = master_season_df.filter(
         (pl.col("GP") >= MIN_GAMES_PLAYED) & (pl.col("MIN") >= MIN_MPG)
     )
-    # eligible_player_ids = eligible_df["PLAYER_ID"].to_list()
-    eligible_player_ids = [201935, 201952, 202695] # temp placeholder
+    eligible_player_ids = eligible_df["PLAYER_ID"].to_list()
+    # eligible_player_ids = [201935, 201952, 202695] # temp placeholder
 
     if not eligible_player_ids:
         logging.warning(f"No eligible players found for season {season}. Skipping detailed stats.")
@@ -625,8 +636,8 @@ def run_pipeline():
     It fetches data for each season, joins it into a master table per season,
     and then combines all seasons into a single parquet file.
     """
-    seasons = get_seasons_list()
-    seasons = ["2019-20", "2020-21"] # just temporary
+    seasons = get_seasons_list(START_SEASON) # 10 years worth of data: 2015-16 - 2025-26
+    # seasons = ["2019-20", "2020-21"] # just temporary
     logging.info(f"Pipeline starting for seasons: {seasons}")
 
     all_season_master_dfs = []
