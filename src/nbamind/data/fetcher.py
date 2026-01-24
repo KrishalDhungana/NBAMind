@@ -1,9 +1,13 @@
 """
+==========================================================================================
+NBAMind: fetcher.py
+------------------------------------------------------------------------------------------
 Simple nba_api fetcher:
 - JSON disk cache (reuse if present)
 - retries + backoff via tenacity
 - basic rate limiting (min delay between requests)
 - cache includes small, useful metadata
+==========================================================================================
 """
 
 from __future__ import annotations
