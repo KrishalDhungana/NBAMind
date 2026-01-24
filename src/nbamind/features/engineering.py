@@ -14,15 +14,13 @@ and complex feature derivation (Offensive Load, Box Creation, etc.) in a single 
 import logging
 import sys
 from pathlib import Path
+from typing import Tuple
 import numpy as np
 import polars as pl
 
 # ----------------------------
 # Configuration
 # ----------------------------
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
 
 DATA_DIR = Path("data/processed")
 INPUT_FILE = DATA_DIR / "master_player_analytics.parquet"
@@ -128,7 +126,7 @@ def load_data(file_path: Path) -> pl.DataFrame:
 # Main Pipeline Function
 # ----------------------------
 
-def feature_engineering_pipeline(df: pl.DataFrame) -> None:
+def feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
     """
     Computes all engineered features sequentially in a single function.
     
@@ -513,14 +511,16 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> None:
     logging.info(f"Saved similarity features to {OUTPUT_SIMILARITY}")
     df_profile.write_parquet(OUTPUT_PROFILE)
     logging.info(f"Saved profile features to {OUTPUT_PROFILE}")
+    return OUTPUT_SIMILARITY, OUTPUT_PROFILE
 
 
 if __name__ == "__main__":
-    # try:
-    #     df_master = load_data(INPUT_FILE)
-    #     feature_engineering_pipeline(df_master)
-    # except Exception as e:
-    #     logging.error(f"Pipeline failed: {e}")
-    #     sys.exit(1)
-    df_master = load_data(INPUT_FILE)
-    feature_engineering_pipeline(df_master)
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    )
+    try:
+        df_master = load_data(INPUT_FILE)
+        feature_engineering_pipeline(df_master)
+    except Exception as e:
+        logging.error(f"Pipeline failed: {e}")
+        sys.exit(1)

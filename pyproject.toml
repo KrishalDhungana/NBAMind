@@ -15,7 +15,9 @@ dependencies = [
   "requests",
   "tenacity",
   "polars",
-  "duckdb"
+  "duckdb",
+  "dagster",
+  "dagster-webserver"
 ]
 
 [tool.setuptools]

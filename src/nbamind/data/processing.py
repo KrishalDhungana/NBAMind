@@ -32,9 +32,6 @@ from nbamind.data.fetcher import fetch
 # ----------------------------
 # Configuration
 # ----------------------------
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
 PROCESSED_DIR = Path("data/processed")
 START_SEASON = 2015 # 2015/16 season
 # Minimum thresholds to qualify a player for detailed, per-player API calls
@@ -630,7 +627,7 @@ def fetch_and_join_player_specific_data(
     return final_df
 
 
-def run_pipeline():
+def run_pipeline() -> Optional[Path]:
     """
     Main function to execute the full data ingestion and processing pipeline.
     It fetches data for each season, joins it into a master table per season,
@@ -674,9 +671,14 @@ def run_pipeline():
         logging.info(f"--- Pipeline finished ---")
         logging.info(f"Master player analytics table saved to: {output_path}")
         logging.info(f"Final table shape: {final_master_df.shape}")
+        return output_path
     else:
         logging.warning("--- Pipeline finished, but no data was processed or saved. ---")
+        return None
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    )
     run_pipeline()
