@@ -27,7 +27,8 @@ from nba_api.stats.endpoints import (
     playerdashptshots,
 )
 
-from nbamind.data.fetcher import fetch
+from nbamind.data.fetcher import fetch_endpoint
+from nbamind.data.scraper import fetch_salaries
 
 # ----------------------------
 # Configuration
@@ -38,8 +39,6 @@ START_SEASON = 2015 # 2015/16 season
 MIN_GAMES_PLAYED = 15
 MIN_MPG = 20
 
-# Endpoint definitions now contain all static parameters.
-# The 'Season' and 'PlayerID' parameters are added dynamically during execution.
 LEAGUE_WIDE_ENDPOINTS = {
     # "all_players": {
     #     "cls": commonallplayers.CommonAllPlayers, # ['PERSON_ID', 'DISPLAY_LAST_COMMA_FIRST', 'DISPLAY_FIRST_LAST', 'ROSTERSTATUS', 'FROM_YEAR', 'TO_YEAR', 'PLAYERCODE', 'PLAYER_SLUG', 'TEAM_ID', 'TEAM_CITY', 'TEAM_NAME', 'TEAM_ABBREVIATION', 'TEAM_CODE', 'TEAM_SLUG', 'GAMES_PLAYED_FLAG', 'OTHERLEAGUE_EXPERIENCE_CH']
@@ -314,7 +313,7 @@ def extract_dataframe_from_response(
     response: Dict[str, Any], result_set_name: str
 ) -> Optional[pl.DataFrame]:
     """
-    Safely extracts a polars DataFrame from the raw API response dictionary.
+    Extracts a polars DataFrame from the raw API response dictionary.
     """
     if not response or "data" not in response:
         logging.warning("Response was empty or did not contain a 'data' key.")
@@ -328,28 +327,17 @@ def extract_dataframe_from_response(
         return None
 
 
-def get_suffix_for_params(params: Dict[str, Any]) -> str:
-    """
-    Determines the appropriate column suffix based on the API parameters.
-    """
-    # Check various keys used by NBA API for mode settings
-    mode = (
-        params.get("per_mode_detailed")
-        or params.get("per_mode_simple")
-        or params.get("per_mode_time")
-        or params.get("PerMode")
-    )
-    if mode:
-        return f"_{mode}"
-    return ""
-
-
 def apply_unit_suffixes(df: pl.DataFrame, params: Dict[str, Any]) -> pl.DataFrame:
     """
     Renames columns to include unit suffixes (e.g., _PerGame, _Per100Possessions)
     based on the fetch parameters.
     """
-    suffix = get_suffix_for_params(params)
+    suffix = (
+        params.get("per_mode_detailed")
+        or params.get("per_mode_simple")
+        or params.get("per_mode_time")
+        or params.get("PerMode")
+    )
     if not suffix:
         return df
 
@@ -369,7 +357,7 @@ def apply_unit_suffixes(df: pl.DataFrame, params: Dict[str, Any]) -> pl.DataFram
         "AST_TO", "PIE"  # Specific ratios/ratings
     }
 
-    # Substring Matches for dimensionless Metrics: if a column name contains ANY of these, it remains unsuffixed.
+    # Substring Matches for dimensionless Metrics: if a column name contains ANY of these, it remains unsuffixed
     rate_indicators = [
         "PCT", "RATE", "RATIO", "RATING", "RANK", 
         "PACE", "AVG", "PER"
@@ -379,7 +367,7 @@ def apply_unit_suffixes(df: pl.DataFrame, params: Dict[str, Any]) -> pl.DataFram
     for col in df.columns:
         if (col in exact_exclusions) or any(x in col for x in rate_indicators):
             continue
-        new_columns[col] = f"{col}{suffix}"
+        new_columns[col] = f"{col}_{suffix}"
 
     return df.rename(new_columns)
 
@@ -398,39 +386,46 @@ def _pivot_and_widen_player_stats(df: pl.DataFrame) -> Optional[pl.DataFrame]:
     """
     if df is None or "GROUP_VALUE" not in df.columns or df.is_empty():
         return None
-
-    # Identify value columns to pivot (i.e., all columns except identifiers).
+    
+    # Identify value columns to pivot (all columns except identifiers)
+    excluded_cols = {
+        "GROUP_VALUE",
+        "GROUP_SET",
+        "PLAYER_ID",
+        "PLAYER_NAME",
+        "NICKNAME",
+        "TEAM_ID",
+        "TEAM_ABBREVIATION",
+        "AGE",
+    }
     value_cols = [
-        c
-        for c in df.columns
-        if c
-        not in [
-            "GROUP_VALUE",
-            "GROUP_SET",
-            "PLAYER_ID",
-            "PLAYER_NAME",
-            "NICKNAME",
-            "TEAM_ID",
-            "TEAM_ABBREVIATION",
-            "AGE",
-        ]
+        c for c in df.columns
+        if c not in excluded_cols
     ]
 
-    # Sanitize GROUP_VALUE strings to be valid parts of column names.
+    # Sanitize GROUP_VALUE strings to be valid parts of column names
     df = df.with_columns(
         sanitized_group=pl.col("GROUP_VALUE").str.replace_all(r"[^a-zA-Z0-9_+()]", "_")
     )
 
-    # Add a dummy index to pivot on, creating a single row output.
+    # Add a dummy index to pivot on, creating a single row output
     df = df.with_columns(_pivot_index=pl.lit(0))
 
-    # Perform the pivot.
+    # Perform the pivot
     pivoted_df = df.pivot(
         values=value_cols, index="_pivot_index", on="sanitized_group"
     )
 
     return pivoted_df.drop("_pivot_index")
 
+
+def _normalize_name(df: pl.DataFrame, col_name: str) -> pl.DataFrame:
+    """
+    Creates a normalized name column for joining (lowercase, no punctuation).
+    """
+    return df.with_columns(
+        pl.col(col_name).str.to_lowercase().str.replace_all(r"[^a-z0-9\s]", "").str.strip_chars().alias("join_key_name")
+    )
 
 # ----------------------------
 # Core Logic
@@ -444,12 +439,12 @@ def fetch_data_for_season(season: str) -> Dict[str, pl.DataFrame]:
     logging.info(f"--- Processing Season: {season} ---")
     season_data = {}
 
-    # Fetch League-Wide Data
+    # Fetch League-Wide cata
     logging.info("=> Fetching league-wide data...")
     for name, endpoint_def in LEAGUE_WIDE_ENDPOINTS.items():
         params = endpoint_def["params"].copy()
         params["season"] = season
-        response = fetch(endpoint_def["cls"], params)
+        response = fetch_endpoint(endpoint_def["cls"], params)
         if response:
             df = extract_dataframe_from_response(response, endpoint_def["result_set"])
             if df is not None and not df.is_empty():
@@ -469,7 +464,7 @@ def join_dataframes(
         logging.warning(f"No dataframes to join for season {season}.")
         return None
 
-    # Use 'base_stats' as the base, as it contains fundamental player info.
+    # Use 'base_stats' as the base
     base_df_name = "base_stats"
     if base_df_name not in dataframes:
         logging.error(f"'{base_df_name}' not found for season {season}, cannot join.")
@@ -477,18 +472,18 @@ def join_dataframes(
     base_df = dataframes[base_df_name]
     join_keys = ["PLAYER_ID", "SEASON_YEAR"]
 
-    # Iteratively join the rest of the dataframes.
+    # Iteratively join the rest of the dataframes
     for name, df in dataframes.items():
         if name == base_df_name:
             continue
 
         processed_df = df.clone()
-
+        
         if "PLAYER_ID" not in processed_df.columns and "CLOSE_DEF_PERSON_ID" in processed_df.columns:
             logging.info(f"Renaming 'CLOSE_DEF_PERSON_ID' to 'PLAYER_ID' for '{name}' table.")
             processed_df = processed_df.rename({"CLOSE_DEF_PERSON_ID": "PLAYER_ID"})
 
-        # Identify and warn about duplicate columns before the join.
+        # Identify and warn about duplicate columns before the join
         base_cols = set(base_df.columns)
         right_cols = set(processed_df.columns)
         common_cols = (base_cols & right_cols) - set(join_keys)
@@ -503,15 +498,11 @@ def join_dataframes(
         # Perform the join
         base_df = base_df.join(processed_df, on=join_keys, how="left")
 
-        # --- Data Integrity Check ---
-        # After joining, check if any players from the base table are missing data
-        # from the table that was just joined. This is identified by nulls in a
-        # column that is unique to the right-side table.
-        
+        # Data integrity check: after joining, check if any players from the base table are missing data from the table that was just joined.
+        # This is identified by nulls in a column that is unique to the right-side table.
         # Heuristic: Pick a column that is likely not null if the data exists.
         # This isn't perfect, but a good proxy.
         unique_col_to_check = next((col for col in processed_df.columns if col not in join_keys), None)
-        
         if unique_col_to_check:
             missing_data_count = base_df.filter(pl.col(unique_col_to_check).is_null()).height
             if missing_data_count > 0:
@@ -546,7 +537,7 @@ def fetch_and_join_player_specific_data(
     """
     logging.info("=> Identifying eligible players for detailed stats...")
 
-    # Filter for players who meet the minimum participation criteria.
+    # Filter for players who meet the minimum participation criteria
     eligible_df = master_season_df.filter(
         (pl.col("GP") >= MIN_GAMES_PLAYED) & (pl.col("MIN") >= MIN_MPG)
     )
@@ -556,10 +547,9 @@ def fetch_and_join_player_specific_data(
     if not eligible_player_ids:
         logging.warning(f"No eligible players found for season {season}. Skipping detailed stats.")
         return eligible_df  # Return the empty (but correctly schema'd) DataFrame
-
     logging.info(f"Found {len(eligible_player_ids)} eligible players. Fetching detailed data...")
 
-    # Create a mapping from player_id to team_id.
+    # Create a mapping from player_id to team_id
     player_team_df = master_season_df.filter(
         pl.col("PLAYER_ID").is_in(eligible_player_ids)
     ).select(["PLAYER_ID", "TEAM_ID"])
@@ -569,7 +559,7 @@ def fetch_and_join_player_specific_data(
     all_players_detailed_stats = []
     for player_id in eligible_player_ids:
         logging.debug(f"Fetching detailed stats for Player ID: {player_id}")
-        # Start with a base DataFrame for the player to join all pivoted results onto.
+        # Start with a base DataFrame for the player to join all pivoted results onto
         player_dfs_to_join = [
             pl.DataFrame({"PLAYER_ID": [player_id], "SEASON_YEAR": [season]})
         ]
@@ -579,7 +569,7 @@ def fetch_and_join_player_specific_data(
             params["season"] = season
             params["player_id"] = player_id
 
-            # The PlayerDashPtShots endpoint specifically requires a team_id.
+            # The PlayerDashPtShots endpoint specifically requires a team_id
             if endpoint_def["cls"] == playerdashptshots.PlayerDashPtShots:
                 team_id = player_id_to_team_id.get(player_id)
                 if team_id is None:
@@ -590,22 +580,19 @@ def fetch_and_join_player_specific_data(
                     continue
                 params["team_id"] = team_id
 
-            response = fetch(endpoint_def["cls"], params)
+            response = fetch_endpoint(endpoint_def["cls"], params)
 
             if response:
                 for rs_name in endpoint_def["result_sets"]:
                     rs_df = extract_dataframe_from_response(response, rs_name)
                     if rs_df is not None and not rs_df.is_empty():
                         rs_df = apply_unit_suffixes(rs_df, params)
-                    # Pivot the long-form data into a single wide row.
-                    pivoted_df = _pivot_and_widen_player_stats(
-                        # rs_df, f"{endpoint_name}_{rs_name}_"
-                        rs_df
-                    )
+                    # Pivot the long-form data into a single wide row
+                    pivoted_df = _pivot_and_widen_player_stats(rs_df)
                     if pivoted_df is not None:
                         player_dfs_to_join.append(pivoted_df)
 
-        # Horizontally concatenate all pivoted DataFrames for the current player.
+        # Horizontally concatenate all pivoted DataFrames for the current player
         if len(player_dfs_to_join) > 1:
             all_players_detailed_stats.append(pl.concat(player_dfs_to_join, how="horizontal"))
 
@@ -613,12 +600,11 @@ def fetch_and_join_player_specific_data(
         logging.warning(f"Failed to fetch any player-specific data for season {season}.")
         return eligible_df
 
-    # Combine all individual player DataFrames into one large DataFrame.
-    # Use `how="diagonal"` to handle cases where players have different sets of stats,
-    # which results in different columns. Polars will fill missing values with nulls.
+    # Combine all individual player DataFrames into one large DataFrame
+    # how="diagonal" handles cases where players have different sets of stats, which results in different columns; Polars will fill missing values with nulls
     player_specific_df = pl.concat(all_players_detailed_stats, how="diagonal")
 
-    # Join the detailed player stats back to the filtered master DataFrame.
+    # Join the detailed player stats back to the filtered master DataFrame
     final_df = eligible_df.join(
         player_specific_df, on=["PLAYER_ID", "SEASON_YEAR"], how="left"
     )
@@ -627,14 +613,42 @@ def fetch_and_join_player_specific_data(
     return final_df
 
 
-def run_pipeline() -> Optional[Path]:
+def merge_salary_data(master_df: pl.DataFrame, season: str) -> pl.DataFrame:
+    """
+    Fetches and merges salary data into the master dataframe.
+    Uses a normalized name join since IDs are not available in scraped data.
+    """
+    salary_df = fetch_salaries(season)
+    
+    if salary_df is None or salary_df.is_empty():
+        logging.warning(f"Skipping salary merge for {season} (no data found).")
+        return master_df
+
+    # Prepare for Join
+    master_df = _normalize_name(master_df, "PLAYER_NAME")
+    salary_df = _normalize_name(salary_df, "PLAYER_NAME")
+
+    # Join on normalized name and season
+    merged_df = master_df.join(salary_df.select(["join_key_name", "SALARY"]), on="join_key_name", how="left")
+    
+    # Log join statistics
+    total = merged_df.height
+    matched = merged_df.filter(pl.col("SALARY").is_not_null()).height
+    pct = (matched / total * 100) if total > 0 else 0
+    logging.info(f"Salary merge for {season}: {matched}/{total} ({pct:.1f}%) players matched.")
+
+    return merged_df.drop("join_key_name")
+
+
+def run_ingestion_pipeline(start_season: int = START_SEASON) -> Optional[Path]:
     """
     Main function to execute the full data ingestion and processing pipeline.
     It fetches data for each season, joins it into a master table per season,
     and then combines all seasons into a single parquet file.
     """
-    seasons = get_seasons_list(START_SEASON) # 10 years worth of data: 2015-16 - 2025-26
+    # seasons = get_seasons_list(start_season)
     # seasons = ["2019-20", "2020-21"] # just temporary
+    seasons = ["2015-16", "2016-17", "2017-18", "2018-19"] # just temporary
     logging.info(f"Pipeline starting for seasons: {seasons}")
 
     all_season_master_dfs = []
@@ -654,15 +668,17 @@ def run_pipeline() -> Optional[Path]:
             logging.error(f"Failed to join league-wide data for season {season}. Skipping.")
             continue
             
-        # 3. Fetch and join player-specific data for eligible players
-        # This returns a DataFrame containing only eligible players with all stats joined.
+        # 3. Merge Salary Data (Scraped)
+        master_season_df = merge_salary_data(master_season_df, season)
+
+        # 4. Fetch and join player-specific data for eligible players
         final_season_df = fetch_and_join_player_specific_data(master_season_df, season)
 
         if final_season_df is not None and not final_season_df.is_empty():
             all_season_master_dfs.append(final_season_df)
-            logging.info(f"Successfully processed data for season {season}.")
+            logging.info(f"Successfully processed all data (API + Salaries) for season {season}.")
 
-    # 4. Combine all seasons and save to a single file
+    # 5. Combine all seasons and save to a single file
     if all_season_master_dfs:
         final_master_df = pl.concat(all_season_master_dfs)
         output_path = PROCESSED_DIR / "master_player_analytics.parquet"
@@ -681,4 +697,4 @@ if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
     )
-    run_pipeline()
+    run_ingestion_pipeline()

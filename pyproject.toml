@@ -17,7 +17,8 @@ dependencies = [
   "polars",
   "duckdb",
   "dagster",
-  "dagster-webserver"
+  "dagster-webserver",
+  "beautifulsoup4"
 ]
 
 [tool.setuptools]

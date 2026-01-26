@@ -10,7 +10,6 @@ This orchestrates the flow from raw API ingestion -> master table -> feature eng
 from pathlib import Path
 from typing import Tuple
 
-import polars as pl
 from dagster import (
     AssetContext,
     Definitions,
@@ -27,50 +26,43 @@ from nbamind.features import engineering
 # -------------------------------------------------------------------------
 
 @asset(
-    description="Fetches raw NBA player data for all configured seasons, handles rate limiting, "
-                "aggregates traded players, and saves the master analytics parquet file.",
+    description="Fetches raw NBA player data, aggregates stats, and saves the master analytics parquet file.",
     group_name="ingestion",
 )
 def raw_nba_data(context: AssetContext) -> Path:
     """
-    Orchestrates the `processing.py` pipeline.
+    Orchestrates the data ingestion pipeline.
     Returns the path to the saved master player analytics file.
     """
     context.log.info("Starting NBA data ingestion pipeline...")
     
-    # Execute the processing pipeline
-    output_path = processing.run_pipeline()
+    output_path = processing.run_ingestion_pipeline()
     
-    if output_path is None:
-        raise RuntimeError("Pipeline finished but returned no output path. Check logs for errors.")
+    if not output_path:
+        raise RuntimeError("Ingestion pipeline failed to produce an output path.")
     
     context.log.info(f"Ingestion complete. Master data saved to: {output_path}")
     return output_path
 
 
 @asset(
-    description="Consumes the master player data to generate normalized similarity features "
-                "and rich profile features.",
+    description="Generates normalized similarity features and rich profile features from master data.",
     group_name="engineering",
 )
 def engineered_features(context: AssetContext, raw_nba_data: Path) -> Tuple[Path, Path]:
     """
-    Orchestrates the `engineering.py` pipeline.
-    Depends on `raw_nba_data` to ensure ingestion runs first.
+    Orchestrates the feature engineering pipeline.
     """
     context.log.info(f"Loading master dataset from: {raw_nba_data}")
     
-    # Load the dataframe to pass into the engineering pipeline
-    # This ensures we are using the file exactly as produced by the upstream asset
-    df = pl.read_parquet(raw_nba_data)
+    # Load data using the engineering module's loader to ensure schema consistency
+    df = engineering.load_data(raw_nba_data)
     context.log.info(f"Loaded DataFrame with shape: {df.shape}")
     
     context.log.info("Running feature engineering pipeline...")
-    sim_path, profile_path = engineering.feature_engineering_pipeline(df)
+    sim_path, profile_path = engineering.run_feature_engineering_pipeline(df)
     
-    context.log.info("Feature engineering complete.")
-    context.log.info(f"Similarity Features: {sim_path}")
-    context.log.info(f"Profile Features:    {profile_path}")
+    context.log.info(f"Feature engineering complete.\nSimilarity: {sim_path}\nProfile: {profile_path}")
     
     return sim_path, profile_path
 

@@ -28,10 +28,10 @@ OUTPUT_SIMILARITY = DATA_DIR / "features_similarity.parquet"
 OUTPUT_PROFILE = DATA_DIR / "features_profile.parquet"
 
 # Columns strictly required from the master file
-# Expanded to include raw stats for the profile view
 REQUIRED_COLUMNS = [
     # Identifiers
     "PLAYER_ID", "PLAYER_NAME", "SEASON_YEAR", "TEAM_ID", "TEAM_ABBREVIATION", "GP", "PLAYER_POSITION",
+    "SALARY",
     # Base Stats (Per Game / Rates)
     "PTS_PerGame", "AST_PerGame", "REB_PerGame", "STL_PerGame", "BLK_PerGame",
     "MIN1_PerGame", "PACE", "FG_PCT", "FG3_PCT", "FT_PCT", "PLUS_MINUS_Per100Possessions",
@@ -78,7 +78,7 @@ REQUIRED_COLUMNS = [
 ]
 
 # ----------------------------
-# Module-Level Helper Functions (Reusable Expressions)
+# Module-Level Helper Functions
 # ----------------------------
 
 def calculate_zscore(col_name: str, group_col: str = "SEASON_YEAR") -> pl.Expr:
@@ -126,7 +126,7 @@ def load_data(file_path: Path) -> pl.DataFrame:
 # Main Pipeline Function
 # ----------------------------
 
-def feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
+def run_feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
     """
     Computes all engineered features sequentially in a single function.
     
@@ -145,7 +145,7 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
     # -------------------------------------------------------------------------
     # 0. Data Cleaning & Type Casting
     # -------------------------------------------------------------------------
-    # Ensure all statistical columns are Float64 to prevent "division by String" errors.
+    # Ensure all statistical columns are Float64
     skip_cols = {"PLAYER_NAME", "SEASON_YEAR", "TEAM_ABBREVIATION", "PLAYER_POSITION"}
     cols_to_cast = [c for c in df.columns if c in REQUIRED_COLUMNS and c not in skip_cols]
     df = df.with_columns([
@@ -163,6 +163,17 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
     # Calculate TOV_PerGame (missing in raw, needed for profile)
     df = df.with_columns([
         (pl.col("TOV_Per100Possessions") * pl.col("poss_PerGame") / 100.0).alias("TOV_PerGame")
+    ])
+
+    # =========================================================================
+    # 1.5. Salary Normalization (Era Adjustment)
+    # =========================================================================
+    logging.info("Computing adjusted salary metrics...")
+    
+    # Adjusted salary: percentage of max observed salary in that season 
+    # CBA ties max allowable player salary directly to the salary cap, so it's a good proxy
+    df = df.with_columns([
+        (pl.col("SALARY") / pl.col("SALARY").max().over("SEASON_YEAR")).alias("salary_pct_max")
     ])
 
     # =========================================================================
@@ -189,7 +200,7 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
     # Offensive Load (percentage of possessions a player is directly involved in)
     # Formula: (AST - (0.38 * box_creation))**0.75 + FGA + (FTA*0.44) + box_creation + TOV
     off_load_expr = (
-        (pl.col("AST_Per100Possessions") - (0.38 * pl.col("box_creation"))).pow(0.75) +
+        (pl.col("AST_Per100Possessions") - (0.38 * pl.col("box_creation"))).clip(0.0).pow(0.75) +
         pl.col("FGA_Per100Possessions") +
         (pl.col("FTA_Per100Possessions") * 0.44) +
         pl.col("box_creation") +
@@ -258,27 +269,28 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
         pl.col("FGA_Per100Possessions_Above_the_Break_3")
     ) + 1e-6
 
-    # Granular Style Metrics (Tendency & Efficiency)
+    # Granular Style Metrics (Tendency)
     # Isolating Style from Volume by using Frequencies (FGA_Type / Total_FGA)
+    # No longer using granular efficiency metrics since they're noisy and sparse; overall efficiency metrics + granular volume metrics capture style and skill
     df = df.with_columns([
         (pl.col("FGA_Per100Possessions_Alley_Oop") / fga_total).alias("freq_alley_oop"),
-        pl.col("FG_PCT_Alley_Oop").alias("eff_alley_oop"),
+        # pl.col("FG_PCT_Alley_Oop").alias("eff_alley_oop"),
         (pl.col("FGA_Per100Possessions_Bank_Shot") / fga_total).alias("freq_bank_shot"),
-        pl.col("FG_PCT_Bank_Shot").alias("eff_bank_shot"),
+        # pl.col("FG_PCT_Bank_Shot").alias("eff_bank_shot"),
         (pl.col("FGA_Per100Possessions_Dunk") / fga_total).alias("freq_dunk"),
-        pl.col("FG_PCT_Dunk").alias("eff_dunk"),
+        # pl.col("FG_PCT_Dunk").alias("eff_dunk"),
         (pl.col("FGA_Per100Possessions_Fadeaway") / fga_total).alias("freq_fadeaway"),
-        pl.col("FG_PCT_Fadeaway").alias("eff_fadeaway"),
+        # pl.col("FG_PCT_Fadeaway").alias("eff_fadeaway"),
         (pl.col("FGA_Per100Possessions_Finger_Roll") / fga_total).alias("freq_finger_roll"),
-        pl.col("FG_PCT_Finger_Roll").alias("eff_finger_roll"),
+        # pl.col("FG_PCT_Finger_Roll").alias("eff_finger_roll"),
         (pl.col("FGA_Per100Possessions_Hook_Shot") / fga_total).alias("freq_hook_shot"),
-        pl.col("FG_PCT_Hook_Shot").alias("eff_hook_shot"),
+        # pl.col("FG_PCT_Hook_Shot").alias("eff_hook_shot"),
         (pl.col("FGA_Per100Possessions_Jump_Shot") / fga_total).alias("freq_jump_shot"),
-        pl.col("FG_PCT_Jump_Shot").alias("eff_jump_shot"),
+        # pl.col("FG_PCT_Jump_Shot").alias("eff_jump_shot"),
         (pl.col("FGA_Per100Possessions_Layup") / fga_total).alias("freq_layup"),
-        pl.col("FG_PCT_Layup").alias("eff_layup"),
+        # pl.col("FG_PCT_Layup").alias("eff_layup"),
         (pl.col("FGA_Per100Possessions_Tip_Shot") / fga_total).alias("freq_tip_shot"),
-        pl.col("FG_PCT_Tip_Shot").alias("eff_tip_shot"),
+        # pl.col("FG_PCT_Tip_Shot").alias("eff_tip_shot"),
     ])
 
     # Zone Frequencies (Already Per100 inputs)
@@ -321,9 +333,10 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
     logging.info("Computing defense and rebounding metrics...")
 
     # Stocks (Steals + Blocks per 100)
-    df = df.with_columns([
-        (pl.col("STL_Per100Possessions") + pl.col("BLK_Per100Possessions")).alias("stocks")
-    ])
+    # No longer using this; too dependant on PCT_STL and PCT_BLK
+    # df = df.with_columns([
+    #     (pl.col("STL_Per100Possessions") + pl.col("BLK_Per100Possessions")).alias("stocks")
+    # ])
 
     # Defensive Versatility: 1 / (1 + abs(Z(BLK) - Z(STL)))
     df = df.with_columns([
@@ -364,11 +377,6 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
     df = df.with_columns([
         (pl.col("DIST_MILES_DEF_PerGame") / (pl.col("MIN1_PerGame") + 1e-6)).alias("def_miles_per_min"),
         (pl.col("DIST_MILES_OFF_PerGame") / (pl.col("MIN1_PerGame") + 1e-6)).alias("off_miles_per_min"),
-        
-        # Physical Z-Scores
-        calculate_zscore("PLAYER_HEIGHT_INCHES").alias("z_height"),
-        calculate_zscore("PLAYER_WEIGHT").alias("z_weight"),
-        calculate_zscore("AGE").alias("z_age")
     ])
 
     # =========================================================================
@@ -405,16 +413,16 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
         "fga_rim_freq", "fga_floater_freq", "fga_mid_freq", "fga_corner_freq", "fga_ab3_freq",
         "drive_rate",
         
-        # Granular Style (New)
-        "freq_alley_oop", "eff_alley_oop",
-        "freq_bank_shot", "eff_bank_shot",
-        "freq_dunk", "eff_dunk",
-        "freq_fadeaway", "eff_fadeaway",
-        "freq_finger_roll", "eff_finger_roll",
-        "freq_hook_shot", "eff_hook_shot",
-        "freq_jump_shot", "eff_jump_shot",
-        "freq_layup", "eff_layup",
-        "freq_tip_shot", "eff_tip_shot",
+        # Granular Style (Tendencies only; Efficiency is noisy at this grain)
+        "freq_alley_oop",
+        "freq_bank_shot",
+        "freq_dunk",
+        "freq_fadeaway",
+        "freq_finger_roll",
+        "freq_hook_shot",
+        "freq_jump_shot",
+        "freq_layup",
+        "freq_tip_shot",
         
         # Playtype Freq
         "pullup_fga_freq", "drive_fga_freq", "catch_shoot_fga_freq", 
@@ -425,7 +433,7 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
         
         # Defense/Reb
         "OREB_PCT", "DREB_PCT", "PCT_BLK", "PCT_STL", 
-        "stocks", "def_versatility", "rim_deterrence", "rim_contests_per_min", "PCT_PLUSMINUS",
+        "def_versatility", "rim_deterrence", "rim_contests_per_min", "PCT_PLUSMINUS",
         
         # Hustle
         "CONTESTED_SHOTS_Per100Possessions", "DEFLECTIONS_Per100Possessions", "CHARGES_DRAWN_Per100Possessions", 
@@ -435,7 +443,7 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
         # Physical/Movement
         "def_miles_per_min", "off_miles_per_min", 
         "AVG_SPEED", "AVG_SPEED_OFF", "AVG_SPEED_DEF",
-        "z_height", "z_weight", "z_age",
+        "PLAYER_HEIGHT_INCHES", "PLAYER_WEIGHT",
         
         # Relative Efficiency
         "rim_efficiency_rel", "mid_efficiency_rel", "three_pt_efficiency_rel"
@@ -449,7 +457,7 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
         for col in numeric_cols
     ])
     
-    # Fill NaNs resulting from Z-score (e.g. std=0) with 0
+    # Fill NaNs resulting from Z-score (e.g. std=0) or missing source data with 0
     # df_similarity = df_similarity.fill_nan(0.0).fill_null(0.0)
 
     # ---------------------------------------------------------
@@ -458,6 +466,7 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
     profile_cols = [
         # Identity
         "PLAYER_ID", "PLAYER_NAME", "SEASON_YEAR", "TEAM_ABBREVIATION", "PLAYER_POSITION", "AGE", "GP", "MIN1_PerGame",
+        "SALARY", "salary_pct_max",
         
         # Base Stats (Per Game)
         "PTS_PerGame", "AST_PerGame", "REB_PerGame", "STL_PerGame", "BLK_PerGame", "TOV_PerGame",
@@ -496,8 +505,9 @@ def feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
     df_profile = df.select(final_profile_cols)
 
     # Validation
-    if df_similarity.select(["PLAYER_ID", "SEASON_YEAR"]).is_duplicated().any():
-        raise ValueError("Duplicate PLAYER_ID + SEASON_YEAR detected in output!")
+    dupes = df_similarity.filter(df_similarity.select(["PLAYER_ID", "SEASON_YEAR"]).is_duplicated())
+    if not dupes.is_empty():
+        raise ValueError(f"Duplicate PLAYER_ID + SEASON_YEAR detected: {dupes.select(['PLAYER_ID', 'SEASON_YEAR']).unique().to_dicts()}")
     null_counts = df_similarity.null_count().transpose(include_header=True)
     null_counts.columns = ["feature", "null_count"]
     logging.info("Null counts per feature (Top 5):")
@@ -520,7 +530,7 @@ if __name__ == "__main__":
     )
     try:
         df_master = load_data(INPUT_FILE)
-        feature_engineering_pipeline(df_master)
+        run_feature_engineering_pipeline(df_master)
     except Exception as e:
         logging.error(f"Pipeline failed: {e}")
         sys.exit(1)

@@ -3,7 +3,7 @@
 NBAMind: fetcher.py
 ------------------------------------------------------------------------------------------
 Simple nba_api fetcher:
-- JSON disk cache (reuse if present)
+- JSON disk cache (reuse for past seasons if present)
 - retries + backoff via tenacity
 - basic rate limiting (min delay between requests)
 - cache includes small, useful metadata
@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from datetime import date
 import time
 from pathlib import Path
 from typing import Any, Dict, Type
@@ -36,7 +37,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 CACHE_DIR = Path("data/raw")
-MIN_INTERVAL_S = 10
+MIN_INTERVAL_S = 10 # 10 seconds between API calls
 TIMEOUT_S = 15
 MAX_RETRIES = 5
 
@@ -65,7 +66,7 @@ _last_request_t = 0.0
 # Core helpers
 # ----------------------------
 
-def _cache_path(endpoint_name: str, params: Dict[str, Any]) -> Path:
+def _get_cache_path(endpoint_name: str, params: Dict[str, Any]) -> Path:
     """Stable filename based on endpoint + params."""
     key = json.dumps(params, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(f"{endpoint_name}|{key}".encode("utf-8")).hexdigest()[:20]
@@ -75,7 +76,14 @@ def _cache_path(endpoint_name: str, params: Dict[str, Any]) -> Path:
     return CACHE_DIR / f"{prefix}_{endpoint_name}_{digest}.json"
 
 
-def _rate_limit() -> None:
+def get_current_season() -> str:
+    """Returns the current NBA season string (e.g., '2024-25')."""
+    today = date.today()
+    start_year = today.year if today.month >= 10 else today.year - 1
+    return f"{start_year}-{(start_year + 1) % 100:02d}"
+
+
+def rate_limit() -> None:
     """Sleep if we are calling too fast."""
     global _last_request_t
     now = time.monotonic()
@@ -96,21 +104,23 @@ def _rate_limit() -> None:
 )
 def _call_endpoint(endpoint_cls: Type[Any], params: Dict[str, Any]) -> Dict[str, Any]:
     """Actual API call with retries and headers."""
-    _rate_limit()
+    rate_limit()
     logger.info(f"Calling endpoint: {endpoint_cls.__name__} with params: {params}")
     ep = endpoint_cls(**params, timeout=TIMEOUT_S, headers=HEADERS)
     return ep.get_dict()
 
 
-def fetch(endpoint_cls: Type[Any], params: Dict[str, Any], *, use_cache: bool = True) -> Dict[str, Any] | None:
+def fetch_endpoint(endpoint_cls: Type[Any], params: Dict[str, Any]) -> Dict[str, Any] | None:
     """
     Fetch nba_api endpoint data with JSON cache.
     Returns the cached file contents or None if fetching fails.
     """
     endpoint_name = endpoint_cls.__name__
-    path = _cache_path(endpoint_name, params)
+    is_current_season = params.get("season") == get_current_season()
+    path = _get_cache_path(endpoint_name, params)
 
-    if use_cache and path.exists():
+    # Skip cache (force refresh) for current season
+    if not is_current_season and path.exists():
         logger.info(f"CACHE HIT: {endpoint_name} for params: {params}")
         with path.open("r", encoding="utf-8") as f:
             return json.load(f)

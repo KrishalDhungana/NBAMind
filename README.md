@@ -29,10 +29,10 @@ with transparent feature drivers.
 ## Quickstart
 
 ```
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+python -m venv .venv    // creates virtual environment folder .venv
+.\.venv\Scripts\Activate.ps1    // activates virtual environment in PowerShell
     NOTE: if this gives issues, run this and repeat: Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-pip install -e .
+pip install -e .    // installs project in editable (development) mode (i.e., installs dependencies from pyproject.toml)
 ```
 
 ## Fetching data
