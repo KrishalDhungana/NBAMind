@@ -427,6 +427,28 @@ def _normalize_name(df: pl.DataFrame, col_name: str) -> pl.DataFrame:
         pl.col(col_name).str.to_lowercase().str.replace_all(r"[^a-z0-9\s]", "").str.strip_chars().alias("join_key_name")
     )
 
+def _deduplicate_dataframe(df: pl.DataFrame, season: str, table_name: str) -> pl.DataFrame:
+    """
+    Ensures the DataFrame is unique on (PLAYER_ID, SEASON_YEAR).
+    Prioritizes rows with higher GP/G or MIN if duplicates exist.
+    """
+    keys = ["PLAYER_ID", "SEASON_YEAR"]
+
+    # Check for duplicates
+    if df.select(keys).is_duplicated().any():
+        n_dupes = df.select(keys).is_duplicated().sum()
+        logging.warning(f"Found {n_dupes} duplicate rows in '{table_name}' for season {season}. Deduplicating...")
+
+        # Sorting prioritization: higher GP > G > MIN > MIN1
+        sort_col = next((c for c in ["GP", "G", "MIN", "MIN1"] if c in df.columns), None)
+        if sort_col:
+            df = df.sort(pl.col(sort_col).fill_null(-1), descending=True)
+        
+        # Keep first unique row per key
+        df = df.unique(subset=keys, keep="first")
+        
+    return df
+
 # ----------------------------
 # Core Logic
 # ----------------------------
@@ -470,6 +492,9 @@ def join_dataframes(
         logging.error(f"'{base_df_name}' not found for season {season}, cannot join.")
         return None
     base_df = dataframes[base_df_name]
+    
+    # Deduplicate base_df rows
+    base_df = _deduplicate_dataframe(base_df, season, base_df_name)
     join_keys = ["PLAYER_ID", "SEASON_YEAR"]
 
     # Iteratively join the rest of the dataframes
@@ -483,16 +508,19 @@ def join_dataframes(
             logging.info(f"Renaming 'CLOSE_DEF_PERSON_ID' to 'PLAYER_ID' for '{name}' table.")
             processed_df = processed_df.rename({"CLOSE_DEF_PERSON_ID": "PLAYER_ID"})
 
+        # Deduplicate processed_df rows
+        processed_df = _deduplicate_dataframe(processed_df, season, name)
+
         # Identify and warn about duplicate columns before the join
         base_cols = set(base_df.columns)
         right_cols = set(processed_df.columns)
         common_cols = (base_cols & right_cols) - set(join_keys)
 
         if common_cols:
-            logging.warning(
-                f"Duplicate columns found when joining '{name}' for season {season}: {common_cols}. "
-                f"These will be dropped from the right-side table."
-            )
+            # logging.warning(
+            #     f"Duplicate columns found when joining '{name}' for season {season}: {common_cols}. "
+            #     f"These will be dropped from the right-side table."
+            # )
             processed_df = processed_df.drop(list(common_cols))
 
         # Perform the join

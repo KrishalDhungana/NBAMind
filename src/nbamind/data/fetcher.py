@@ -105,7 +105,7 @@ def rate_limit() -> None:
 def _call_endpoint(endpoint_cls: Type[Any], params: Dict[str, Any]) -> Dict[str, Any]:
     """Actual API call with retries and headers."""
     rate_limit()
-    logger.info(f"Calling endpoint: {endpoint_cls.__name__} with params: {params}")
+    # logger.info(f"Calling endpoint: {endpoint_cls.__name__} with params: {params}")
     ep = endpoint_cls(**params, timeout=TIMEOUT_S, headers=HEADERS)
     return ep.get_dict()
 
@@ -121,7 +121,7 @@ def fetch_endpoint(endpoint_cls: Type[Any], params: Dict[str, Any]) -> Dict[str,
 
     # Skip cache (force refresh) for current season
     if not is_current_season and path.exists():
-        logger.info(f"CACHE HIT: {endpoint_name} for params: {params}")
+        # logger.info(f"CACHE HIT: {endpoint_name} for params: {params}")
         with path.open("r", encoding="utf-8") as f:
             return json.load(f)
 
@@ -145,7 +145,7 @@ def fetch_endpoint(endpoint_cls: Type[Any], params: Dict[str, Any]) -> Dict[str,
 
         with path.open("w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
-        logger.info(f"SUCCESS: Fetched and cached {endpoint_name} for params: {params}")
+        # logger.info(f"SUCCESS: Fetched and cached {endpoint_name} for params: {params}")
         return payload
 
     except Exception as e:
