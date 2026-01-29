@@ -59,7 +59,7 @@ REQUIRED_COLUMNS = [
     "DEF_RIM_FGA_PerGame", "DEF_RIM_FG_PCT",
     # Hustle / Physical
     "DEFLECTIONS_PerGame", "CHARGES_DRAWN_PerGame", "SCREEN_ASSISTS_PerGame",
-    "LOOSE_BALLS_RECOVERED_PerGame", "BOX_OUTS_PerGame", "CONTESTED_SHOTS_PerGame",
+    "LOOSE_BALLS_RECOVERED_PerGame", "CONTESTED_SHOTS_PerGame",
     "DIST_MILES_OFF_PerGame", "DIST_MILES_DEF_PerGame",
     "AVG_SPEED", "AVG_SPEED_OFF", "AVG_SPEED_DEF",
     "PLAYER_HEIGHT_INCHES", "PLAYER_WEIGHT", "AGE",
@@ -81,12 +81,19 @@ REQUIRED_COLUMNS = [
 # Module-Level Helper Functions
 # ----------------------------
 
-def calculate_zscore(col_name: str, group_col: str = "SEASON_YEAR") -> pl.Expr:
-    """Calculates Z-Score for a column grouped by season."""
+def calculate_robust_score(col_name: str, group_col: str = "SEASON_YEAR") -> pl.Expr:
+    """
+    Calculates a Robust Z-Score using Median and MAD (Median Absolute Deviation).
+    This is more resilient to outliers than standard Z-Score.
+    Values are clipped to [-4, 4] to prevent extreme outliers from dominating similarity.
+    """
+    # 1.4826 scales MAD to be comparable to Standard Deviation for normal distributions
+    median_expr = pl.col(col_name).median().over(group_col)
+    mad_expr = (pl.col(col_name) - median_expr).abs().median().over(group_col) * 1.4826
+    
     return (
-        (pl.col(col_name) - pl.col(col_name).mean().over(group_col)) / 
-        (pl.col(col_name).std().over(group_col) + 1e-6)
-    )
+        (pl.col(col_name) - median_expr) / (mad_expr + 1e-6)
+    ).clip(-4.0, 4.0).fill_null(0.0)
 
 def convert_per_game_to_per_100(col_name: str, poss_col: str = "poss_PerGame") -> pl.Expr:
     """Converts a PerGame stat to Per100Possessions."""
@@ -213,13 +220,12 @@ def run_feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
     # =========================================================================
     logging.info("Computing season averages and Z-scores...")
     
-    # We calculate Z-scores temporarily for aggregation
-    time_poss_rate = (pl.col("TIME_OF_POSS_PerGame") / pl.col("MIN1_PerGame")) # (total minutes player possesses ball) / (player minutes per game)
+    # Heliocentricity: Mean of Robust Scores for USG, AST%, TimeOfPoss/Min
+    df = df.with_columns((pl.col("TIME_OF_POSS_PerGame") / pl.col("MIN1_PerGame")).alias("time_poss_rate"))
     df = df.with_columns([
-        calculate_zscore("USG_PCT").alias("z_usg"),
-        calculate_zscore("AST_PCT").alias("z_ast_pct"),
-        ( (time_poss_rate - time_poss_rate.mean().over("SEASON_YEAR")) / 
-          (time_poss_rate.std().over("SEASON_YEAR") + 1e-6) ).alias("z_time_poss")
+        calculate_robust_score("USG_PCT").alias("z_usg"),
+        calculate_robust_score("AST_PCT").alias("z_ast_pct"),
+        calculate_robust_score("time_poss_rate").alias("z_time_poss")
     ])
 
     # Heliocentricity: Mean of Z(USG), Z(AST%), Z(TimeOfPoss/Min)
@@ -338,15 +344,6 @@ def run_feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
     #     (pl.col("STL_Per100Possessions") + pl.col("BLK_Per100Possessions")).alias("stocks")
     # ])
 
-    # Defensive Versatility: 1 / (1 + abs(Z(BLK) - Z(STL)))
-    df = df.with_columns([
-        calculate_zscore("BLK_Per100Possessions").alias("z_blk"),
-        calculate_zscore("STL_Per100Possessions").alias("z_stl"),
-    ])
-    df = df.with_columns([
-        (1.0 / (1.0 + (pl.col("z_blk") - pl.col("z_stl")).abs())).alias("def_versatility")
-    ])
-
     # Rim Deterrence: Player Rim FG% - League Rim FG%
     # League stat calculation: Sum(FGM_Rim) / Sum(FGA_Rim)
     league_rim_pct = get_league_ratio_sum_expr(
@@ -368,7 +365,7 @@ def run_feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
     # Hustle stats: PerGame -> Per100
     hustle_cols = [
         "CONTESTED_SHOTS_PerGame", "DEFLECTIONS_PerGame", "CHARGES_DRAWN_PerGame",
-        "SCREEN_ASSISTS_PerGame", "LOOSE_BALLS_RECOVERED_PerGame", "BOX_OUTS_PerGame"
+        "SCREEN_ASSISTS_PerGame", "LOOSE_BALLS_RECOVERED_PerGame"
     ]
     hustle_exprs = [convert_per_game_to_per_100(col).alias(col.replace("_PerGame", "_Per100Possessions")) for col in hustle_cols]
     df = df.with_columns(hustle_exprs)
@@ -433,11 +430,11 @@ def run_feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
         
         # Defense/Reb
         "OREB_PCT", "DREB_PCT", "PCT_BLK", "PCT_STL", 
-        "def_versatility", "rim_deterrence", "rim_contests_per_min", "PCT_PLUSMINUS",
+        "rim_deterrence", "rim_contests_per_min", "PCT_PLUSMINUS",
         
         # Hustle
         "CONTESTED_SHOTS_Per100Possessions", "DEFLECTIONS_Per100Possessions", "CHARGES_DRAWN_Per100Possessions", 
-        "SCREEN_ASSISTS_Per100Possessions", "LOOSE_BALLS_RECOVERED_Per100Possessions", "BOX_OUTS_Per100Possessions",
+        "SCREEN_ASSISTS_Per100Possessions", "LOOSE_BALLS_RECOVERED_Per100Possessions",
         "PF_Per100Possessions",
         
         # Physical/Movement
@@ -449,16 +446,16 @@ def run_feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
         "rim_efficiency_rel", "mid_efficiency_rel", "three_pt_efficiency_rel"
     ]
 
-    # Select similarity features & apply Z-Score Normalization to ALL similarity features (excluding ID cols) for search optimization
+    # Select similarity features & apply Robust Scaling to ALL similarity features (excluding ID cols)
     id_cols = ["PLAYER_ID", "SEASON_YEAR"]
     numeric_cols = [c for c in sim_features if c not in id_cols]
     df_similarity = df.select(sim_features).with_columns([
-        calculate_zscore(col).alias(col) 
+        calculate_robust_score(col).alias(col) 
         for col in numeric_cols
     ])
     
-    # Fill NaNs resulting from Z-score (e.g. std=0) or missing source data with 0
-    # df_similarity = df_similarity.fill_nan(0.0).fill_null(0.0)
+    # Fill NaNs resulting from missing source data (e.g. 2015 hustle) with 0 (Median/Average)
+    df_similarity = df_similarity.fill_nan(0.0).fill_null(0.0)
 
     # ---------------------------------------------------------
     # Profile Output (Rich stats for UI)
@@ -476,7 +473,7 @@ def run_feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
         "TS_PCT", "USG_PCT", "AST_PCT", "OFF_RATING", "DEF_RATING", "NET_RATING", "PIE", "PACE",
         
         # Archetype / Computed
-        "offensive_load", "box_creation", "passing_efficiency", "scoring_gravity", "def_versatility", "three_pt_proficiency",
+        "offensive_load", "box_creation", "passing_efficiency", "scoring_gravity", "three_pt_proficiency",
         "drive_rate",
         
         # Shooting Zones (Volumes & Efficiency)
