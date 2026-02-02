@@ -18,7 +18,9 @@ dependencies = [
   "duckdb",
   "dagster",
   "dagster-webserver",
-  "beautifulsoup4"
+  "beautifulsoup4",
+  "scikit-learn",
+  "pyarrow"
 ]
 
 [tool.setuptools]

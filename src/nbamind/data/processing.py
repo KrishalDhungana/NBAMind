@@ -676,7 +676,7 @@ def run_ingestion_pipeline(start_season: int = START_SEASON) -> Optional[Path]:
     """
     # seasons = get_seasons_list(start_season)
     # seasons = ["2019-20", "2020-21"] # just temporary
-    seasons = ["2015-16", "2016-17", "2017-18", "2018-19"] # just temporary
+    seasons = ["2015-16", "2016-17", "2017-18", "2018-19", "2019-20", "2020-21", "2021-22"] # just temporary
     logging.info(f"Pipeline starting for seasons: {seasons}")
 
     all_season_master_dfs = []

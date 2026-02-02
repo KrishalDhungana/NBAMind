@@ -93,7 +93,7 @@ def calculate_robust_score(col_name: str, group_col: str = "SEASON_YEAR") -> pl.
     
     return (
         (pl.col(col_name) - median_expr) / (mad_expr + 1e-6)
-    ).clip(-4.0, 4.0).fill_null(0.0)
+    ).clip(-4.0, 4.0)
 
 def convert_per_game_to_per_100(col_name: str, poss_col: str = "poss_PerGame") -> pl.Expr:
     """Converts a PerGame stat to Per100Possessions."""
@@ -266,14 +266,14 @@ def run_feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
     fga_total = pl.col("FGA_Per100Possessions") + 1e-6
 
     # Calculate total FGA from zones (since zone columns appear to be totals)
-    fga_zones_sum = (
-        pl.col("FGA_Per100Possessions_Restricted_Area") +
-        pl.col("FGA_Per100Possessions_In_The_Paint_(Non_RA)") +
-        pl.col("FGA_Per100Possessions_Mid_Range") +
-        pl.col("FGA_Per100Possessions_Left_Corner_3") +
-        pl.col("FGA_Per100Possessions_Right_Corner_3") +
+    fga_zones_sum = pl.sum_horizontal([
+        pl.col("FGA_Per100Possessions_Restricted_Area"),
+        pl.col("FGA_Per100Possessions_In_The_Paint_(Non_RA)"),
+        pl.col("FGA_Per100Possessions_Mid_Range"),
+        pl.col("FGA_Per100Possessions_Left_Corner_3"),
+        pl.col("FGA_Per100Possessions_Right_Corner_3"),
         pl.col("FGA_Per100Possessions_Above_the_Break_3")
-    ) + 1e-6
+    ]) + 1e-6
 
     # Granular Style Metrics (Tendency)
     # Isolating Style from Volume by using Frequencies (FGA_Type / Total_FGA)
@@ -411,15 +411,16 @@ def run_feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
         "drive_rate",
         
         # Granular Style (Tendencies only; Efficiency is noisy at this grain)
-        "freq_alley_oop",
-        "freq_bank_shot",
-        "freq_dunk",
-        "freq_fadeaway",
-        "freq_finger_roll",
-        "freq_hook_shot",
-        "freq_jump_shot",
-        "freq_layup",
-        "freq_tip_shot",
+        # UPDATE: also got rid of tendencies since they're still too granular
+        # "freq_alley_oop",
+        # "freq_bank_shot",
+        # "freq_dunk",
+        # "freq_fadeaway",
+        # "freq_finger_roll",
+        # "freq_hook_shot",
+        # "freq_jump_shot",
+        # "freq_layup",
+        # "freq_tip_shot",
         
         # Playtype Freq
         "pullup_fga_freq", "drive_fga_freq", "catch_shoot_fga_freq", 
@@ -507,8 +508,8 @@ def run_feature_engineering_pipeline(df: pl.DataFrame) -> Tuple[Path, Path]:
         raise ValueError(f"Duplicate PLAYER_ID + SEASON_YEAR detected: {dupes.select(['PLAYER_ID', 'SEASON_YEAR']).unique().to_dicts()}")
     null_counts = df_similarity.null_count().transpose(include_header=True)
     null_counts.columns = ["feature", "null_count"]
-    logging.info("Null counts per feature (Top 5):")
-    logging.info(null_counts.filter(pl.col("feature") != "PLAYER_ID").sort("null_count", descending=True).head(5))
+    logging.info("Null counts per feature (Top 10):")
+    logging.info(null_counts.filter(pl.col("feature") != "PLAYER_ID").sort("null_count", descending=True).head(10))
     logging.info(f"Final Similarity Shape: {df_similarity.shape}")
     logging.info(f"Final Profile Shape: {df_profile.shape}")
 
