@@ -105,7 +105,7 @@ def rate_limit() -> None:
 def _call_endpoint(endpoint_cls: Type[Any], params: Dict[str, Any]) -> Dict[str, Any]:
     """Actual API call with retries and headers."""
     rate_limit()
-    # logger.info(f"Calling endpoint: {endpoint_cls.__name__} with params: {params}")
+    logger.info(f"Calling endpoint: {endpoint_cls.__name__} with params: {params}")
     ep = endpoint_cls(**params, timeout=TIMEOUT_S, headers=HEADERS)
     return ep.get_dict()
 

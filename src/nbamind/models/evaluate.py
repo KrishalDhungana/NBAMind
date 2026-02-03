@@ -108,7 +108,18 @@ def run_evaluation():
             print(f"\nQuery Player: {t_name} ({t_season})")
             
             try:
-                results = model.search(t_id, t_season, top_n=5)
+                # Fetch more results to allow for filtering duplicates (same player, different seasons)
+                raw_results = model.search(t_id, t_season, top_n=50)
+                
+                results = []
+                seen_players = set()
+                for res in raw_results:
+                    pid = res["PLAYER_ID"]
+                    if pid not in seen_players:
+                        results.append(res)
+                        seen_players.add(pid)
+                    if len(results) >= 5:
+                        break
                 
                 print(f"{'-'*80}")
                 print(f"{'Rank':<5} {'Player':<30} {'Season':<10} {'Score':<10}")
@@ -123,7 +134,7 @@ def run_evaluation():
                     top_name = top.get("PLAYER_NAME", "Unknown")
                     print(f"\n>> EXPLAINING MATCH: {t_name} <--> {top_name}")
                     
-                    explanation = model.explain_match(t_id, t_season, top["PLAYER_ID"], top["SEASON_YEAR"])
+                    explanation = model.explain(t_id, t_season, top["PLAYER_ID"], top["SEASON_YEAR"])
                     
                     print("  [Shared Strengths] (Both players have high Z-scores)")
                     for t in explanation["shared_strengths"]:
@@ -162,11 +173,15 @@ def run_evaluation():
                 print(f"Finding players with >20% similarity and <50% of the cost...")
                 
                 try:
-                    # Search for top 20 similar players to cast a wide net
-                    results = model.search(target["PLAYER_ID"], t_season, top_n=20)
+                    # Search for top 50 similar players to cast a wide net
+                    results = model.search(target["PLAYER_ID"], t_season, top_n=50)
                     
                     found_bargain = False
                     for res in results:
+                        # Requirement: Only consider players in the same season
+                        if res["SEASON_YEAR"] != t_season:
+                            continue
+
                         # Lookup salary for the match
                         match_row = df[(df["PLAYER_ID"] == res["PLAYER_ID"]) & (df["SEASON_YEAR"] == res["SEASON_YEAR"])]
                         if match_row.empty:
