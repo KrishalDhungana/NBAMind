@@ -23,6 +23,7 @@ import pandas as pd
 import polars as pl
 
 from nbamind.models.baseline import BaselineSimilarityModel
+from nbamind.models.vae import VAESimilarityModel
 
 # ----------------------------
 # Configuration
@@ -83,14 +84,23 @@ def run_evaluation():
     # Exclude SALARY from the model features so similarity is based purely on on-court performance.
     # We keep the full 'df' for metadata lookups (Names, Salaries).
     train_cols = [c for c in df.columns if c != "SALARY"]
-    model = BaselineSimilarityModel(variance_threshold=0.95)
-    model.fit(df[train_cols])
     
-    print_header("MODEL DIAGNOSTICS")
-    print(f"Input Rows:      {df.shape[0]}")
-    print(f"Input Features:  {len(model.feature_names)}")
-    print(f"PCA Components:  {model.pca.n_components_}")
-    print(f"Explained Var:   {sum(model.pca.explained_variance_ratio_):.2%}")
+    models = {
+        "Baseline (PCA)": BaselineSimilarityModel(variance_threshold=0.95),
+        "VAE (Neural Net)": VAESimilarityModel(latent_dim=16, epochs=30)
+    }
+
+    for name, model in models.items():
+        print_header(f"TRAINING MODEL: {name}")
+        model.fit(df[train_cols])
+        print(f"Input Rows:      {df.shape[0]}")
+        print(f"Input Features:  {len(model.feature_names)}")
+        if hasattr(model, "pca"):
+            print(f"PCA Components:  {model.pca.n_components_}")
+            print(f"Explained Var:   {sum(model.pca.explained_variance_ratio_):.2%}")
+        elif hasattr(model, "embeddings"):
+            print(f"Latent Dim:      {model.latent_dim}")
+            print(f"Embeddings:      {model.embeddings.shape}")
 
     # 2. Evaluation on Random Players
     print_header("EVALUATION: Random Player Samples")
@@ -107,49 +117,57 @@ def run_evaluation():
 
             print(f"\nQuery Player: {t_name} ({t_season})")
             
-            try:
-                # Fetch more results to allow for filtering duplicates (same player, different seasons)
-                raw_results = model.search(t_id, t_season, top_n=50)
-                
-                results = []
-                seen_players = set()
-                for res in raw_results:
-                    pid = res["PLAYER_ID"]
-                    if pid not in seen_players:
-                        results.append(res)
-                        seen_players.add(pid)
-                    if len(results) >= 5:
-                        break
-                
-                print(f"{'-'*80}")
-                print(f"{'Rank':<5} {'Player':<30} {'Season':<10} {'Score':<10}")
-                print(f"{'-'*80}")
-                
-                for i, res in enumerate(results):
-                    r_name = res.get("PLAYER_NAME", "Unknown")
-                    print(f"{i + 1:<5} {r_name:<30} {res['SEASON_YEAR']:<10} {res['similarity_score']:.4f}")
-
-                if results:
-                    top = results[0]
-                    top_name = top.get("PLAYER_NAME", "Unknown")
-                    print(f"\n>> EXPLAINING MATCH: {t_name} <--> {top_name}")
+            for name, model in models.items():
+                print(f"\n  --- Model: {name} ---")
+                try:
+                    # Fetch more results to allow for filtering duplicates (same player, different seasons)
+                    raw_results = model.search(t_id, t_season, top_n=50)
                     
-                    explanation = model.explain(t_id, t_season, top["PLAYER_ID"], top["SEASON_YEAR"])
+                    results = []
+                    seen_players = set()
+                    for res in raw_results:
+                        pid = res["PLAYER_ID"]
+                        if pid not in seen_players:
+                            results.append(res)
+                            seen_players.add(pid)
+                        if len(results) >= 5:
+                            break
                     
-                    print("  [Shared Strengths] (Both players have high Z-scores)")
-                    for t in explanation["shared_strengths"]:
-                        print(f"    * {t['feature']:<30} ({t_name}={t['val_a']:.2f}, {top_name}={t['val_b']:.2f})")
+                    print(f"  {'-'*76}")
+                    print(f"  {'Rank':<5} {'Player':<30} {'Season':<10} {'Score':<10}")
+                    print(f"  {'-'*76}")
+                    
+                    for i, res in enumerate(results):
+                        r_name = res.get("PLAYER_NAME", "Unknown")
+                        print(f"  {i + 1:<5} {r_name:<30} {res['SEASON_YEAR']:<10} {res['similarity_score']:.4f}")
 
-                    print("  [Shared Weaknesses] (Both players have low Z-scores)")
-                    for t in explanation["shared_weaknesses"]:
-                        print(f"    * {t['feature']:<30} ({t_name}={t['val_a']:.2f}, {top_name}={t['val_b']:.2f})")
+                    if results:
+                        top = results[0]
+                        top_name = top.get("PLAYER_NAME", "Unknown")
+                        print(f"\n  >> EXPLAINING MATCH: {t_name} <--> {top_name}")
+                        
+                        explanation = model.explain(t_id, t_season, top["PLAYER_ID"], top["SEASON_YEAR"])
+                        
+                        if "embedding_drivers" in explanation and explanation["embedding_drivers"]:
+                            print("    [Latent Space Drivers (SHAP)]")
+                            for t in explanation["embedding_drivers"]:
+                                print(f"      * {t['feature']:<30} (Importance={t['importance']:.4f})")
 
-                    print("  [Key Differences] (Largest Z-score gaps)")
-                    for t in explanation["key_differences"]:
-                        print(f"    * {t['feature']:<30} ({t_name}={t['val_a']:.2f}, {top_name}={t['val_b']:.2f})")
+                        print("    [Shared Strengths]")
+                        for t in explanation.get("shared_strengths", []):
+                            print(f"      * {t['feature']:<30} ({t_name}={t['val_a']:.2f}, {top_name}={t['val_b']:.2f})")
 
-            except Exception as e:
-                logger.error(f"Search failed for {t_name}: {e}")
+                        if "shared_weaknesses" in explanation:
+                            print("    [Shared Weaknesses]")
+                            for t in explanation["shared_weaknesses"]:
+                                print(f"      * {t['feature']:<30} ({t_name}={t['val_a']:.2f}, {top_name}={t['val_b']:.2f})")
+
+                        print("    [Key Differences]")
+                        for t in explanation.get("key_differences", []):
+                            print(f"      * {t['feature']:<30} ({t_name}={t['val_a']:.2f}, {top_name}={t['val_b']:.2f})")
+
+                except Exception as e:
+                    logger.error(f"Search failed for {t_name} on {name}: {e}")
 
     # 3. Moneyball Analysis
     print_header("MONEYBALL ANALYSIS: High Production, Low Cost")
@@ -170,39 +188,39 @@ def run_evaluation():
                 t_salary = target['SALARY']
                 
                 print(f"\nTarget: {t_name} ({t_season}) | Salary: {format_currency(t_salary)}")
-                print(f"Finding players with >20% similarity and <50% of the cost...")
                 
-                try:
-                    # Search for top 50 similar players to cast a wide net
-                    results = model.search(target["PLAYER_ID"], t_season, top_n=50)
-                    
-                    found_bargain = False
-                    for res in results:
-                        # Requirement: Only consider players in the same season
-                        if res["SEASON_YEAR"] != t_season:
-                            continue
+                for name, model in models.items():
+                    print(f"  [{name}] Finding bargains (>85% sim, <50% cost)...")
+                    try:
+                        # Search for top 50 similar players to cast a wide net
+                        results = model.search(target["PLAYER_ID"], t_season, top_n=50)
+                        
+                        found_bargain = False
+                        for res in results:
+                            # Requirement: Only consider players in the same season
+                            if res["SEASON_YEAR"] != t_season:
+                                continue
 
-                        # Lookup salary for the match
-                        match_row = df[(df["PLAYER_ID"] == res["PLAYER_ID"]) & (df["SEASON_YEAR"] == res["SEASON_YEAR"])]
-                        if match_row.empty:
-                            continue
+                            # Lookup salary for the match
+                            match_row = df[(df["PLAYER_ID"] == res["PLAYER_ID"]) & (df["SEASON_YEAR"] == res["SEASON_YEAR"])]
+                            if match_row.empty:
+                                continue
+                                
+                            m_salary = match_row["SALARY"].iloc[0]
                             
-                        m_salary = match_row["SALARY"].iloc[0]
+                            # Moneyball Criteria: High Similarity (>0.85) AND Low Cost (<50%)
+                            if res["similarity_score"] > 0.85 and m_salary < (t_salary * 0.5):
+                                savings = t_salary - m_salary
+                                m_name = res.get("PLAYER_NAME", "Unknown")
+                                print(f"    -> FOUND: {m_name:<25} ({res['SEASON_YEAR']})")
+                                print(f"       Score: {res['similarity_score']:.4f} | Cost: {format_currency(m_salary)} ({(m_salary/t_salary):.1%})")
+                                found_bargain = True
                         
-                        # Moneyball Criteria: High Similarity (>0.85) AND Low Cost (<50%)
-                        if res["similarity_score"] > 0.20 and m_salary < (t_salary * 0.5):
-                            savings = t_salary - m_salary
-                            m_name = res.get("PLAYER_NAME", "Unknown")
-                            print(f"  -> BARGAIN FOUND: {m_name:<25} ({res['SEASON_YEAR']})")
-                            print(f"     Similarity: {res['similarity_score']:.4f} | Salary: {format_currency(m_salary)}")
-                            print(f"     Savings: {format_currency(savings)} ({(m_salary/t_salary):.1%} of cost)")
-                            found_bargain = True
-                    
-                    if not found_bargain:
-                        print("  -> No distinct moneyball candidates found (market is efficient for this player).")
-                        
-                except Exception as e:
-                    logger.error(f"Moneyball search failed for {t_name}: {e}")
+                        if not found_bargain:
+                            print("    -> No distinct bargains found.")
+                            
+                    except Exception as e:
+                        logger.error(f"Moneyball search failed for {t_name} on {name}: {e}")
     else:
         print("Salary data not available for Moneyball analysis.")
 
